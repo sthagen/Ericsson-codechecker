@@ -1309,9 +1309,7 @@ class ThriftRequestHandler(object):
                     # For this reason we create queries with chunks.
                     new_hashes = []
                     chunk_size = 500
-                    for chunk in [report_hashes[i:i + chunk_size] for
-                                  i in range(0, len(report_hashes),
-                                             chunk_size)]:
+                    for chunk in util.chunks(iter(report_hashes), chunk_size):
                         new_hashes_query = union_all(*[
                             select([bindparam('bug_id' + str(i), h)
                                     .label('bug_id')])
@@ -2337,16 +2335,15 @@ class ThriftRequestHandler(object):
     @timeit
     def getFailedFilesCount(self, run_ids):
         """
-          Count the number of failed files in the latest storage of each given
-          run. If the run id list is empty the number of failed files will be
-          counted for all of the runs.
+        Count the number of uniqued failed files in the latest storage of each
+        given run. If the run id list is empty the number of failed files will
+        be counted for all of the runs.
         """
-        self.__require_access()
-        with DBSession(self.__Session) as session:
-            query, _ = get_failed_files_query(
-                session, run_ids, [func.sum(AnalyzerStatistic.failed)])
-
-            return query.scalar() or 0
+        # Unfortunately we can't distinct the failed file paths by using SQL
+        # queries because the list of failed files for a run / analyzer are
+        # stored in one column in a compressed way. For this reason we need to
+        # decompress the value in the Python code before uniqueing.
+        return len(self.getFailedFiles(run_ids).keys())
 
     @exc_to_thrift_reqfail
     @timeit
@@ -2406,9 +2403,7 @@ class ThriftRequestHandler(object):
         """
         Removing reports in chunks.
         """
-        for r_ids in [report_ids[i:i + chunk_size] for
-                      i in range(0, len(report_ids),
-                                 chunk_size)]:
+        for r_ids in util.chunks(iter(report_ids), chunk_size):
             session.query(Report) \
                 .filter(Report.id.in_(r_ids)) \
                 .delete(synchronize_session=False)
