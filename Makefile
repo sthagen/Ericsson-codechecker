@@ -1,8 +1,7 @@
 -include Makefile.local
 
 CURRENT_DIR = ${CURDIR}
-BUILD_DIR = $(CURRENT_DIR)/build
-VENDOR_DIR = $(CURRENT_DIR)/vendor
+BUILD_DIR ?= $(CURRENT_DIR)/build
 PYTHON_BIN ?= python3
 
 CC_BUILD_DIR = $(BUILD_DIR)/CodeChecker
@@ -63,18 +62,19 @@ package: package_dir_structure set_git_commit_template package_gerrit_skiplist
 	$(CC_BUILD_DIR)/config/analyzer_version.json \
 	$(CC_BUILD_DIR)/config/web_version.json
 
-	mkdir -p $(CC_BUILD_DIR)/cc_bin && \
 	${PYTHON_BIN} ./scripts/build/create_commands.py -b $(BUILD_DIR) \
 	  --cmd-dir $(ROOT)/codechecker_common/cmd \
 	    $(CC_WEB)/codechecker_web/cmd \
 	    $(CC_SERVER)/codechecker_server/cmd \
 	    $(CC_CLIENT)/codechecker_client/cmd \
 	    $(CC_ANALYZER)/codechecker_analyzer/cmd \
-	  --bin-file $(ROOT)/bin/CodeChecker \
-	  --cc-bin-file $(ROOT)/bin/CodeChecker.py
+	  --bin-file $(ROOT)/bin/CodeChecker
 
 	# Copy license file.
 	cp $(ROOT)/LICENSE.TXT $(CC_BUILD_DIR)
+
+package_api:
+	BUILD_DIR=$(BUILD_DIR) $(MAKE) -C $(CC_WEB) package_api
 
 standalone_package: venv package
 	# Create a version of the package, which uses a wrapper script to
@@ -90,19 +90,23 @@ standalone_package: venv package
 		-b _CodeChecker \
 		-o CodeChecker
 
+.PHONY: dist
+dist:
+	${PYTHON_BIN} setup.py sdist
+
 venv:
 	# Create a virtual environment which can be used to run the build package.
 	python3 -m venv venv --prompt="CodeChecker venv" && \
 		$(ACTIVATE_RUNTIME_VENV) && \
-		pip3 install -r $(CC_ANALYZER)/requirements.txt && \
-		pip3 install -r $(CC_WEB)/requirements.txt
+		cd $(CC_ANALYZER) && pip3 install -r requirements.txt && \
+		cd $(CC_WEB) && pip3 install -r $(CC_WEB)/requirements.txt
 
 venv_osx:
 	# Create a virtual environment which can be used to run the build package.
 	python3 -m venv venv --prompt="CodeChecker venv" && \
 		$(ACTIVATE_RUNTIME_VENV) && \
-		pip3 install -r $(CC_ANALYZER)/requirements_py/osx/requirements.txt && \
-		pip3 install -r $(CC_WEB)/requirements_py/osx/requirements.txt
+		cd $(CC_ANALYZER) && pip3 install -r requirements_py/osx/requirements.txt && \
+		cd $(CC_WEB) && pip3 install -r requirements_py/osx/requirements.txt
 
 clean_venv:
 	rm -rf venv

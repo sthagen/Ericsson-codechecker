@@ -11,6 +11,7 @@ Static analyzer configuration handler.
 
 
 from abc import ABCMeta
+from enum import Enum
 from operator import itemgetter
 import collections
 import platform
@@ -32,13 +33,10 @@ LOG = get_logger('system')
 # disabled on the command-line, or belongs to a profile explicitly disabled
 # on the command-line, then it is considered to have a CheckerState of
 # disabled.
-# TODO: Use enum when upgrading to Python3.
-class CheckerState(object):
+class CheckerState(Enum):
     default = 0
     disabled = 1
     enabled = 2
-    STATES = {'default', 'disabled', 'enabled'}
-    NAMES = {0: 'default', 1: 'disabled', 2: 'enabled'}
 
 
 class AnalyzerConfigHandler(object, metaclass=ABCMeta):
@@ -163,14 +161,14 @@ class AnalyzerConfigHandler(object, metaclass=ABCMeta):
             LOG.error("'list' is a reserved profile keyword. ")
             LOG.error("Please choose another profile name in "
                       "%s/config/checker_profile_map.json and rebuild.",
-                      analyzer_context.package_root)
+                      analyzer_context.data_files_dir_path)
             sys.exit(1)
 
         if 'guideline:list' in map(itemgetter(0), cmdline_enable):
             LOG.error("'list' is a reserved guideline keyword. ")
             LOG.error("Please choose another guideline name in "
                       "%s/config/checker_guideline_map.json and rebuild.",
-                      analyzer_context.package_root)
+                      analyzer_context.data_files_dir_path)
             sys.exit(1)
 
         # Add all checkers marked as default. This means the analyzer should

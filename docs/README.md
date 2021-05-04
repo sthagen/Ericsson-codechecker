@@ -156,7 +156,7 @@ For more information how to use CodeChecker see our [user guide](usage.md).
 * Continous Integration(CI)
   * [Setting up CI gating with Gerrit and Jenkins](jenkins_gerrit_integration.md)
 * Database Configuration
-  * [PostgreSQL database backend setup guide](web/PostgreSQL_setup.md)
+  * [PostgreSQL database backend setup guide](web/postgresql_setup.md)
   * [CodeChecker server and database schema upgrade guide](web/db_schema_guide.md)
 
 ### Storage of reports from analyzer tools
@@ -211,6 +211,11 @@ and can be installed with the following command:
 ```sh
 sudo snap install codechecker --classic
 ```
+
+**Note:** unfortunately snap package supports only lower case command names.
+For this reason you need to use `codechecker` command instead of `CodeChecker`
+everywhere. For full list of available commands in the codechecker snap package
+run `snap info codechecker`.
 
 ## Linux
 
