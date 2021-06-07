@@ -78,35 +78,9 @@ static void getCurrentTime(char* buff_)
   timeinfo = localtime(&rawtime);
 
   strftime(buff_, 26, "%Y-%m-%d %H:%M:%S", timeinfo);
-
-  return buff_;
 }
 
-// FIXME: Deprecated. Use the predictEscapedSizeFixed instead.
 int predictEscapedSize(const char* str_)
-{
-  int size = 0;
-
-  while (*str_)
-  {
-    if (strchr("\\\t\b\f\n ", *str_))
-      size += 2;
-    else if (*str_ == '"')
-      /* The quote (") needs an extra escaped escape character because the
-         JSON string literals are surrounded by quote by default. */
-      size += 3;
-
-    ++size;
-    ++str_;
-  }
-
-  /* For closing \0 character. */
-  ++size;
-
-  return size;
-}
-
-int predictEscapedSizeFixed(const char* str_)
 {
   int size = 0;
 
@@ -130,44 +104,7 @@ int predictEscapedSizeFixed(const char* str_)
   return size;
 }
 
-// FIXME: Deprecated. Use the shellEscapeStrFixed instead.
 char* shellEscapeStr(const char* str_, char* buff_)
-{
-  char* out = buff_;
-
-  while (*str_)
-  {
-    switch (*str_)
-    {
-      case '\\':
-      case '\t':
-      case '\b':
-      case '\f':
-      case '\n':
-      case ' ':
-        *out++ = '\\';
-        *out++ = '\\';
-        *out++ = *str_++;
-        break;
-
-      case '\"':
-        *out++ = '\\';
-        *out++ = '\\';
-        *out++ = '\\';
-        *out++ = *str_++;
-        break;
-
-      default:
-        *out++ = *str_++;
-        break;
-        }
-    }
-
-    *out = '\0';
-    return buff_;
-}
-
-char* shellEscapeStrFixed(const char* str_, char* buff_)
 {
   char* out = buff_;
 
@@ -600,7 +537,7 @@ void freeLock(int lockFile_)
   }
 }
 
-void logPrint(char* logLevel_, char* fileName_, int line_, char *fmt_,...)
+int logPrint(char* logLevel_, char* fileName_, int line_, char *fmt_,...)
 {
   const char* debugFile = getenv("CC_LOGGER_DEBUG_FILE");
   if (!debugFile)
@@ -640,7 +577,7 @@ void logPrint(char* logLevel_, char* fileName_, int line_, char *fmt_,...)
     line_);
 
   char* p, *str, **items;
-  int num;
+  size_t num;
   size_t i;
 
   va_list args;
@@ -657,7 +594,7 @@ void logPrint(char* logLevel_, char* fileName_, int line_, char *fmt_,...)
       {
         case 'a':
         {
-          num = va_arg(args, int);
+          num = va_arg(args, size_t);
           items = va_arg(args, char**);
           for (i = 0; i < num; ++i)
           {
@@ -673,8 +610,8 @@ void logPrint(char* logLevel_, char* fileName_, int line_, char *fmt_,...)
         }
         case 'd':
         {
-          num = va_arg(args, int);
-          fprintf(stream, "%d", num);
+          num = va_arg(args, size_t);
+          fprintf(stream, "%zu", num);
           continue;
         }
         default:
@@ -690,4 +627,6 @@ void logPrint(char* logLevel_, char* fileName_, int line_, char *fmt_,...)
 
   fclose(stream);
   freeLock(lockFd);
+
+  return 0;
 }

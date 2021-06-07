@@ -252,6 +252,7 @@ def perform_analysis(args, skip_handler, context, actions, metadata_tool,
                 "failed": 0,
                 "failed_sources": [],
                 "successful": 0,
+                "successful_sources": [],
                 "version": None}}
 
         for check, data in config_map[analyzer].checks().items():
@@ -350,6 +351,7 @@ def perform_analysis(args, skip_handler, context, actions, metadata_tool,
                                        metadata_tool,
                                        'quiet' in args,
                                        'capture_analysis_output' in args,
+                                       'generate_reproducer' in args,
                                        args.timeout if 'timeout' in args
                                        else None,
                                        ctu_reanalyze_on_failure,

@@ -1,30 +1,10 @@
 <template>
   <v-card flat tile>
-    <v-dialog
-      v-model="showCheckCommandDialog"
-      content-class="check-command"
-      width="500"
-    >
-      <v-card>
-        <v-card-title
-          class="headline primary white--text"
-          primary-title
-        >
-          Check command
-
-          <v-spacer />
-
-          <v-btn icon dark @click="showCheckCommandDialog = false">
-            <v-icon>mdi-close</v-icon>
-          </v-btn>
-        </v-card-title>
-        <v-card-text>
-          <v-container>
-            {{ checkCommand }}
-          </v-container>
-        </v-card-text>
-      </v-card>
-    </v-dialog>
+    <analysis-info-dialog
+      :value.sync="analysisInfoDialog"
+      :run-id="selectedRunId"
+      :run-history-id="selectedRunHistoryId"
+    />
 
     <analyzer-statistics-dialog
       :value.sync="analyzerStatisticsDialog"
@@ -70,7 +50,7 @@
           <expanded-run
             :histories="item.$history.values"
             :run="item"
-            :open-check-command-dialog="openCheckCommandDialog"
+            :open-analysis-info-dialog="openAnalysisInfoDialog"
             :open-analyzer-statistics-dialog="openAnalyzerStatisticsDialog"
             :selected-baseline-tags.sync="selectedBaselineTags"
             :selected-compared-to-tags.sync="selectedComparedToTags"
@@ -90,14 +70,14 @@
 
       <template #item.name="{ item }">
         <run-name-column
-          :id="item.runId.toNumber()"
+          :id="item.runId"
           :name="item.name"
           :description="item.description"
           :version-tag="item.versionTag"
           :detection-status-count="item.detectionStatusCount"
           :report-filter-query="getReportFilterQuery(item)"
           :statistics-filter-query="getStatisticsFilterQuery(item)"
-          :open-check-command-dialog="openCheckCommandDialog"
+          :open-analysis-info-dialog="openAnalysisInfoDialog"
         />
       </template>
 
@@ -177,6 +157,7 @@ import {
   RunSortType
 } from "@cc/report-server-types";
 
+import { AnalysisInfoDialog } from "@/components";
 import {
   AnalyzerStatisticsBtn,
   AnalyzerStatisticsDialog,
@@ -190,6 +171,7 @@ export default {
   components: {
     AnalyzerStatisticsBtn,
     AnalyzerStatisticsDialog,
+    AnalysisInfoDialog,
     ExpandedRun,
     RunNameColumn,
     RunFilterToolbar
@@ -207,8 +189,7 @@ export default {
 
     return {
       initialized: false,
-      showCheckCommandDialog: false,
-      checkCommand: null,
+      analysisInfoDialog: false,
       pagination: {
         page: page,
         itemsPerPage: itemsPerPage,
@@ -316,10 +297,6 @@ export default {
         this.fetchRuns();
       },
       deep: true
-    },
-
-    showCheckCommandDialog (val) {
-      val || this.closeCheckCommandDialog();
     }
   },
 
@@ -527,26 +504,16 @@ export default {
       });
     },
 
-    openCheckCommandDialog(runId, runHistoryId=null) {
-      ccService.getClient().getCheckCommand(runHistoryId, runId,
-        handleThriftError(checkCommand => {
-          if (!checkCommand) {
-            checkCommand = "Unavailable!";
-          }
-          this.checkCommand = checkCommand;
-          this.showCheckCommandDialog = true;
-        }));
+    openAnalysisInfoDialog(runId, runHistoryId=null) {
+      this.selectedRunId = runId;
+      this.selectedRunHistoryId = runHistoryId;
+      this.analysisInfoDialog = true;
     },
 
     openAnalyzerStatisticsDialog(report, history=null) {
       this.selectedRunId = report ? report.runId : null;
       this.selectedRunHistoryId = history ? history.id : null;
       this.analyzerStatisticsDialog = true;
-    },
-
-    closeCheckCommandDialog() {
-      this.showCheckCommandDialog = false;
-      this.checkCommand = null;
     },
 
     prettifyDuration(seconds) {

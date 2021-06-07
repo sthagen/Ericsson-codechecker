@@ -141,12 +141,13 @@ with open(os.path.join("docs", "README.md"), "r",
 
 setuptools.setup(
     name="codechecker",
-    version="6.16.0",
+    version="6.17.0",
     author='CodeChecker Team (Ericsson)',
     author_email='csordasmarton92@gmail.com',
     description="CodeChecker is an analyzer tooling, defect database and "
                 "viewer extension",
     long_description=long_description,
+    long_description_content_type = "text/markdown",
     url="https://github.com/Ericsson/CodeChecker",
     keywords=['codechecker', 'plist'],
     license='LICENSE.TXT',

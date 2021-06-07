@@ -9,17 +9,15 @@
 Handle Thrift requests.
 """
 
-
 import base64
-from collections import defaultdict
-from datetime import datetime, timedelta
 import os
 import re
 import shlex
-import tempfile
-import time
-import zipfile
 import zlib
+
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import List
 
 import sqlalchemy
 from sqlalchemy.sql.expression import or_, and_, not_, func, \
@@ -27,18 +25,14 @@ from sqlalchemy.sql.expression import or_, and_, not_, func, \
 
 import codechecker_api_shared
 from codechecker_api.codeCheckerDBAccess_v6 import constants, ttypes
-from codechecker_api.codeCheckerDBAccess_v6.ttypes import BugPathPos, \
-    CheckerCount, CommentData, DiffType, Encoding, RunHistoryData, Order, \
-    ReportData, ReportDetails, ReviewData, RunData, RunFilter, \
-    RunReportCount, RunSortType, RunTagCount, SourceComponentData, \
+from codechecker_api.codeCheckerDBAccess_v6.ttypes import AnalysisInfoFilter, \
+    BugPathPos, CheckerCount, CommentData, DiffType, Encoding, \
+    RunHistoryData, Order, ReportData, ReportDetails, ReviewData, RunData, \
+    RunFilter, RunReportCount, RunSortType, RunTagCount, SourceComponentData, \
     SourceFileData, SortMode, SortType, ExportData
 
-from codechecker_common import plist_parser, skiplist_handler
-from codechecker_common.source_code_comment_handler import \
-    SourceCodeCommentHandler, SpellException, contains_codechecker_comment
 from codechecker_common import util
 from codechecker_common.logger import get_logger
-from codechecker_report_hash.hash import get_report_path_hash
 
 from codechecker_web.shared import webserver_context
 from codechecker_web.shared import convert
@@ -50,24 +44,25 @@ from ..database import db_cleanup
 from ..database.config_db_model import Product
 from ..database.database import conv, DBSession, escape_like
 from ..database.run_db_model import \
-    AnalyzerStatistic, Report, ReviewStatus, File, Run, RunHistory, \
-    RunLock, Comment, BugPathEvent, BugReportPoint, \
-    FileContent, SourceComponent, ExtendedReportData
-from ..metadata import MetadataInfoParser
-from ..tmp import TemporaryDirectory
+    AnalysisInfo, AnalyzerStatistic, BugPathEvent, BugReportPoint, Comment, \
+    ExtendedReportData, File, FileContent, Report, ReportAnalysisInfo, \
+    ReviewStatus, Run, RunHistory, RunHistoryAnalysisInfo, RunLock, \
+    SourceComponent
 
 from .thrift_enum_helper import detection_status_enum, \
     detection_status_str, review_status_enum, review_status_str, \
     report_extended_data_type_enum
 
-from . import store_handler
 
 LOG = get_logger('server')
 
 GEN_OTHER_COMPONENT_NAME = "Other (auto-generated)"
 
+SQLITE_MAX_VARIABLE_NUMBER = 999
+SQLITE_MAX_COMPOUND_SELECT = 500
 
-class CommentKindValue(object):
+
+class CommentKindValue:
     USER = 0
     SYSTEM = 1
 
@@ -141,34 +136,14 @@ def exc_to_thrift_reqfail(func):
             LOG.warning("%s:\n%s", func_name, rf.message)
             raise
         except Exception as ex:
+            import traceback
+            traceback.print_exc()
             msg = str(ex)
             LOG.warning("%s:\n%s", func_name, msg)
             raise codechecker_api_shared.ttypes.RequestFailed(
                 codechecker_api_shared.ttypes.ErrorCode.GENERAL, msg)
 
     return wrapper
-
-
-def parse_codechecker_review_comment(source_file_name,
-                                     report_line,
-                                     checker_name):
-    """Parse the CodeChecker review comments from a source file at a given
-    position.  Returns an empty list if there are no comments.
-    """
-    src_comment_data = []
-    with open(source_file_name,
-              encoding='utf-8',
-              errors='ignore') as sf:
-        if contains_codechecker_comment(sf):
-            sc_handler = SourceCodeCommentHandler()
-            try:
-                src_comment_data = sc_handler.filter_source_line_comments(
-                    sf,
-                    report_line,
-                    checker_name)
-            except SpellException as ex:
-                LOG.warning("File %s contains %s", source_file_name, ex)
-    return src_comment_data
 
 
 def get_component_values(session, component_name):
@@ -212,19 +187,21 @@ def process_report_filter(session, run_ids, report_filter, cmp_data=None):
     """
     AND = []
 
-    cmp_filter_expr = process_cmp_data_filter(session, run_ids, report_filter,
-                                              cmp_data)
+    cmp_filter_expr, join_tables = process_cmp_data_filter(
+        session, run_ids, report_filter, cmp_data)
+
     if cmp_filter_expr is not None:
         AND.append(cmp_filter_expr)
 
     if report_filter is None:
-        return and_(*AND)
+        return and_(*AND), join_tables
 
     if report_filter.filepath:
         OR = [File.filepath.ilike(conv(fp))
               for fp in report_filter.filepath]
 
         AND.append(or_(*OR))
+        join_tables.append(File)
 
     if report_filter.checkerMsg:
         OR = [Report.checker_message.ilike(conv(cm))
@@ -245,6 +222,7 @@ def process_report_filter(session, run_ids, report_filter, cmp_data=None):
         OR = [Run.name.ilike(conv(rn))
               for rn in report_filter.runName]
         AND.append(or_(*OR))
+        join_tables.append(Run)
 
     if report_filter.reportHash:
         OR = []
@@ -279,6 +257,7 @@ def process_report_filter(session, run_ids, report_filter, cmp_data=None):
             OR.append(ReviewStatus.status.is_(None))
 
         AND.append(or_(*OR))
+        join_tables.append(ReviewStatus)
 
     if report_filter.firstDetectionDate is not None:
         date = datetime.fromtimestamp(report_filter.firstDetectionDate)
@@ -321,6 +300,7 @@ def process_report_filter(session, run_ids, report_filter, cmp_data=None):
     if report_filter.componentNames:
         AND.append(process_source_component_filter(
             session, report_filter.componentNames))
+        join_tables.append(File)
 
     if report_filter.bugPathLength is not None:
         min_path_length = report_filter.bugPathLength.min
@@ -332,7 +312,7 @@ def process_report_filter(session, run_ids, report_filter, cmp_data=None):
             AND.append(Report.path_length <= max_path_length)
 
     filter_expr = and_(*AND)
-    return filter_expr
+    return filter_expr, join_tables
 
 
 def process_source_component_filter(session, component_names):
@@ -444,6 +424,24 @@ def get_diff_bug_id_query(session, run_ids, tag_ids, open_reports_date):
     return q
 
 
+def get_diff_bug_id_filter(run_ids, tag_ids, open_reports_date):
+    """ Get bug id filter for diff. """
+    AND = []
+
+    if run_ids:
+        AND.append(Report.run_id.in_(run_ids))
+
+    if tag_ids:
+        AND.append(RunHistory.id.in_(tag_ids))
+        AND.append(get_open_reports_date_filter_query())
+
+    if open_reports_date:
+        date = datetime.fromtimestamp(open_reports_date)
+        AND.append(get_open_reports_date_filter_query(Report, date))
+
+    return and_(*AND)
+
+
 def get_diff_run_id_query(session, run_ids, tag_ids):
     """ Get run id query for diff. """
     q = session.query(Run.id.distinct())
@@ -483,16 +481,25 @@ def process_cmp_data_filter(session, run_ids, report_filter, cmp_data):
     base_tag_ids = report_filter.runTag if report_filter else None
     base_open_reports_date = report_filter.openReportsDate \
         if report_filter else None
-    query_base = get_diff_bug_id_query(session, run_ids, base_tag_ids,
-                                       base_open_reports_date)
-    query_base_runs = get_diff_run_id_query(session, run_ids, base_tag_ids)
 
     if is_cmp_data_empty(cmp_data):
         if not run_ids and is_baseline_empty(report_filter):
-            return None
+            return None, []
 
-        return and_(Report.bug_id.in_(query_base),
-                    Report.run_id.in_(query_base_runs))
+        diff_filter = get_diff_bug_id_filter(
+            run_ids, base_tag_ids, base_open_reports_date)
+        join_tables = []
+
+        if run_ids:
+            join_tables.append(Run)
+        if base_tag_ids:
+            join_tables.append(RunHistory)
+
+        return and_(diff_filter), join_tables
+
+    query_base = get_diff_bug_id_query(session, run_ids, base_tag_ids,
+                                       base_open_reports_date)
+    query_base_runs = get_diff_run_id_query(session, run_ids, base_tag_ids)
 
     query_new = get_diff_bug_id_query(session, cmp_data.runIds,
                                       cmp_data.runTag,
@@ -503,22 +510,22 @@ def process_cmp_data_filter(session, run_ids, report_filter, cmp_data):
     AND = []
     if cmp_data.diffType == DiffType.NEW:
         return and_(Report.bug_id.in_(query_new.except_(query_base)),
-                    Report.run_id.in_(query_new_runs))
+                    Report.run_id.in_(query_new_runs)), [Run]
 
     elif cmp_data.diffType == DiffType.RESOLVED:
         return and_(Report.bug_id.in_(query_base.except_(query_new)),
-                    Report.run_id.in_(query_base_runs))
+                    Report.run_id.in_(query_base_runs)), [Run]
 
     elif cmp_data.diffType == DiffType.UNRESOLVED:
         return and_(Report.bug_id.in_(query_base.intersect(query_new)),
-                    Report.run_id.in_(query_new_runs))
+                    Report.run_id.in_(query_new_runs)), [Run]
 
     else:
         raise codechecker_api_shared.ttypes.RequestFailed(
             codechecker_api_shared.ttypes.ErrorCode.DATABASE,
             'Unsupported diff type: ' + str(cmp_data.diffType))
 
-    return and_(*AND)
+    return and_(*AND), []
 
 
 def process_run_history_filter(query, run_ids, run_history_filter):
@@ -742,32 +749,6 @@ def get_comment_msg(comment):
     return message
 
 
-def unzip(b64zip, output_dir):
-    """
-    This function unzips the base64 encoded zip file. This zip is extracted
-    to a temporary directory and the ZIP is then deleted. The function returns
-    the size of the extracted decompressed zip file.
-    """
-    if len(b64zip) == 0:
-        return 0
-
-    with tempfile.NamedTemporaryFile(suffix='.zip') as zip_file:
-        LOG.debug("Unzipping mass storage ZIP '%s' to '%s'...",
-                  zip_file.name, output_dir)
-
-        zip_file.write(zlib.decompress(base64.b64decode(b64zip)))
-        with zipfile.ZipFile(zip_file, 'r', allowZip64=True) as zipf:
-            try:
-                zipf.extractall(output_dir)
-                return os.stat(zip_file.name).st_size
-            except Exception:
-                LOG.error("Failed to extract received ZIP.")
-                import traceback
-                traceback.print_exc()
-                raise
-    return 0
-
-
 def create_review_data(review_status):
     if review_status:
         return ReviewData(status=review_status_enum(review_status.status),
@@ -785,18 +766,21 @@ def create_count_expression(report_filter):
         return func.count(literal_column('*'))
 
 
-def apply_report_filter(q, filter_expression):
+def apply_report_filter(q, filter_expression, join_tables):
     """
     Applies the given filter expression and joins the File and ReviewStatus
     tables.
     """
-    q = q.outerjoin(File,
-                    Report.file_id == File.id) \
-        .outerjoin(ReviewStatus,
-                   ReviewStatus.bug_hash == Report.bug_id) \
-        .filter(filter_expression)
+    if File in join_tables:
+        q = q.outerjoin(File, Report.file_id == File.id)
+    if ReviewStatus in join_tables:
+        q = q.outerjoin(ReviewStatus, ReviewStatus.bug_hash == Report.bug_id)
+    if Run in join_tables:
+        q = q.outerjoin(Run, Run.id == Report.run_id)
+    if RunHistory in join_tables:
+        q = q.outerjoin(RunHistory, RunHistory.run_id == Report.run_id)
 
-    return q
+    return q.filter(filter_expression)
 
 
 def get_sort_map(sort_types, is_unique=False):
@@ -962,7 +946,7 @@ def get_analysis_statistics_query(session, run_ids, run_history_ids=None):
                    Run.id == RunHistory.run_id)
 
 
-class ThriftRequestHandler(object):
+class ThriftRequestHandler:
     """
     Connect to database and handle thrift client requests.
     """
@@ -982,24 +966,24 @@ class ThriftRequestHandler(object):
             raise ValueError("Cannot initialize request handler without "
                              "a product to serve.")
 
-        self.__manager = manager
-        self.__product = product
-        self.__auth_session = auth_session
-        self.__config_database = config_database
+        self._manager = manager
+        self._product = product
+        self._auth_session = auth_session
+        self._config_database = config_database
         self.__checker_md_docs = checker_md_docs
         self.__checker_doc_map = checker_md_docs_map
         self.__package_version = package_version
-        self.__Session = Session
-        self.__context = context
+        self._Session = Session
+        self._context = context
         self.__permission_args = {
             'productID': product.id
         }
 
-    def __get_username(self):
+    def _get_username(self):
         """
         Returns the actually logged in user name.
         """
-        return self.__auth_session.user if self.__auth_session else "Anonymous"
+        return self._auth_session.user if self._auth_session else "Anonymous"
 
     def __require_permission(self, required):
         """
@@ -1007,12 +991,12 @@ class ThriftRequestHandler(object):
         have any of the given permissions.
         """
 
-        with DBSession(self.__config_database) as session:
+        with DBSession(self._config_database) as session:
             args = dict(self.__permission_args)
             args['config_db_session'] = session
 
             if not any([permissions.require_permission(
-                    perm, args, self.__auth_session)
+                    perm, args, self._auth_session)
                     for perm in required]):
                 raise codechecker_api_shared.ttypes.RequestFailed(
                     codechecker_api_shared.ttypes.ErrorCode.UNAUTHORIZED,
@@ -1032,7 +1016,7 @@ class ThriftRequestHandler(object):
     def __add_comment(self, bug_id, message, kind=CommentKindValue.USER,
                       date=None):
         """ Creates a new comment object. """
-        user = self.__get_username()
+        user = self._get_username()
         return Comment(bug_id,
                        user,
                        message.encode('utf-8'),
@@ -1045,7 +1029,7 @@ class ThriftRequestHandler(object):
 
         limit = verify_limit_range(limit)
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
 
             # Count the reports subquery.
             stmt = session.query(Report.run_id,
@@ -1145,34 +1129,80 @@ class ThriftRequestHandler(object):
     def getRunCount(self, run_filter):
         self.__require_access()
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             query = session.query(Run.id)
             query = process_run_filter(session, query, run_filter)
 
         return query.count()
 
+    # DEPRECATED: use getAnalysisInfo API function instead of this function.
     def getCheckCommand(self, run_history_id, run_id):
+        """ Get analyzer command based on the given filter. """
+        limit = None
+        offset = 0
+        analysis_info_filter = AnalysisInfoFilter(
+            runId=run_id,
+            runHistoryId=run_history_id)
+
+        analysis_info = self.getAnalysisInfo(
+            analysis_info_filter, limit, offset)
+
+        return "; ".join([i.analyzerCommand for i in analysis_info])
+
+    @exc_to_thrift_reqfail
+    @timeit
+    def getAnalysisInfo(self, analysis_info_filter, limit, offset):
+        """ Get analysis information based on the given filter. """
         self.__require_access()
 
-        if not run_history_id and not run_id:
-            return ""
+        res: List[ttypes.AnalysisInfo] = []
+        if not analysis_info_filter:
+            return res
 
-        with DBSession(self.__Session) as session:
-            query = session.query(RunHistory.check_command)
-
-            if run_history_id:
-                query = query.filter(RunHistory.id == run_history_id)
-            elif run_id:
-                query = query.filter(RunHistory.run_id == run_id) \
+        analysis_info_query = None
+        with DBSession(self._Session) as session:
+            run_id = analysis_info_filter.runId
+            run_history_ids = None
+            if run_id is not None:
+                run_history_ids = session \
+                    .query(RunHistory.id) \
+                    .filter(RunHistory.run_id == run_id) \
                     .order_by(RunHistory.time.desc()) \
                     .limit(1)
 
-            history = query.first()
+            if run_history_ids is None:
+                run_history_ids = [analysis_info_filter.runHistoryId]
 
-            if not history or not history[0]:
-                return ""
+            if run_history_ids is not None:
+                rh_a_tbl = RunHistoryAnalysisInfo
+                analysis_info_query = session.query(AnalysisInfo) \
+                    .outerjoin(
+                        rh_a_tbl,
+                        rh_a_tbl.c.analysis_info_id == AnalysisInfo.id) \
+                    .filter(rh_a_tbl.c.run_history_id.in_(run_history_ids))
 
-        return zlib.decompress(history[0]).decode('utf-8')
+            report_id = analysis_info_filter.reportId
+            if report_id is not None:
+                r_a_tbl = ReportAnalysisInfo
+                analysis_info_query = session.query(AnalysisInfo) \
+                    .outerjoin(
+                        r_a_tbl,
+                        r_a_tbl.c.analysis_info_id == AnalysisInfo.id) \
+                    .filter(r_a_tbl.c.report_id == report_id)
+
+            if analysis_info_query:
+                if limit:
+                    analysis_info_query = analysis_info_query \
+                        .limit(limit).offset(offset)
+
+                for cmd in analysis_info_query:
+                    command = \
+                        zlib.decompress(cmd.analyzer_command).decode('utf-8')
+
+                    res.append(ttypes.AnalysisInfo(
+                        analyzerCommand=command))
+
+        return res
 
     @exc_to_thrift_reqfail
     @timeit
@@ -1181,7 +1211,7 @@ class ThriftRequestHandler(object):
 
         limit = verify_limit_range(limit)
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
 
             res = session.query(RunHistory)
 
@@ -1219,7 +1249,7 @@ class ThriftRequestHandler(object):
     def getRunHistoryCount(self, run_ids, run_history_filter):
         self.__require_access()
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             query = session.query(RunHistory.id)
             query = process_run_history_filter(query,
                                                run_ids,
@@ -1232,7 +1262,7 @@ class ThriftRequestHandler(object):
     def getReport(self, reportId):
         self.__require_access()
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
 
             result = session.query(Report,
                                    File,
@@ -1280,7 +1310,7 @@ class ThriftRequestHandler(object):
         skip_statuses_str = [detection_status_str(status)
                              for status in skip_detection_statuses]
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             if diff_type == DiffType.NEW:
                 # In postgresql we can select multiple rows filled with
                 # constants by using `unnest` function. In sqlite we have to
@@ -1296,7 +1326,7 @@ class ThriftRequestHandler(object):
                 base_hashes = \
                     filter_open_reports_in_tags(base_hashes, run_ids, tag_ids)
 
-                if self.__product.driver_name == 'postgresql':
+                if self._product.driver_name == 'postgresql':
                     new_hashes = select([func.unnest(report_hashes)
                                          .label('bug_id')]) \
                         .except_(base_hashes).alias('new_bugs')
@@ -1308,8 +1338,8 @@ class ThriftRequestHandler(object):
                     # than 8435 sqlite threw a `Segmentation fault` error.
                     # For this reason we create queries with chunks.
                     new_hashes = []
-                    chunk_size = 500
-                    for chunk in util.chunks(iter(report_hashes), chunk_size):
+                    for chunk in util.chunks(iter(report_hashes),
+                                             SQLITE_MAX_COMPOUND_SELECT):
                         new_hashes_query = union_all(*[
                             select([bindparam('bug_id' + str(i), h)
                                     .label('bug_id')])
@@ -1348,11 +1378,11 @@ class ThriftRequestHandler(object):
 
         limit = verify_limit_range(limit)
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             results = []
 
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter, cmp_data)
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter, cmp_data)
 
             is_unique = report_filter is not None and report_filter.isUnique
             if is_unique:
@@ -1369,7 +1399,8 @@ class ThriftRequestHandler(object):
 
                 unique_reports = session.query(*selects)
                 unique_reports = apply_report_filter(unique_reports,
-                                                     filter_expression)
+                                                     filter_expression,
+                                                     join_tables)
                 unique_reports = unique_reports \
                     .group_by(Report.bug_id) \
                     .subquery()
@@ -1416,7 +1447,7 @@ class ThriftRequestHandler(object):
                     report_details = get_report_details(session, report_ids)
 
                 for report_id, bug_id, checker_msg, checker, severity, \
-                    detected_at, fixed_at, status, filename, path, \
+                    detected_at, fixed_at, status, filename, _, \
                         bug_path_len, analyzer_name in query_result:
                     review_data = create_review_data(status)
 
@@ -1433,21 +1464,21 @@ class ThriftRequestHandler(object):
                                    details=report_details.get(report_id),
                                    analyzerName=analyzer_name))
             else:
+                sort_types, sort_type_map, order_type_map = \
+                    get_sort_map(sort_types)
+
+                if SortType.FILENAME in map(lambda x: x.type, sort_types):
+                    join_tables.append(File)
+
                 q = session.query(Report.run_id, Report.id, Report.file_id,
                                   Report.line, Report.column,
                                   Report.detection_status, Report.bug_id,
                                   Report.checker_message, Report.checker_id,
                                   Report.severity, Report.detected_at,
                                   Report.fixed_at, ReviewStatus,
-                                  File.filepath,
-                                  Report.path_length, Report.analyzer_name) \
-                    .outerjoin(File, Report.file_id == File.id) \
-                    .outerjoin(ReviewStatus,
-                               ReviewStatus.bug_hash == Report.bug_id) \
-                    .filter(filter_expression)
-
-                sort_types, sort_type_map, order_type_map = \
-                    get_sort_map(sort_types)
+                                  Report.path_length, Report.analyzer_name)
+                q = apply_report_filter(
+                    q, filter_expression, join_tables + [ReviewStatus])
 
                 q = sort_results_query(q, sort_types, sort_type_map,
                                        order_type_map)
@@ -1462,16 +1493,31 @@ class ThriftRequestHandler(object):
                     report_ids = [r[1] for r in query_result]
                     report_details = get_report_details(session, report_ids)
 
+                # Earlier file table was joined to the query of reports.
+                # However, that created an SQL strategy in PostgreSQL which
+                # resulted in timeout. Based on heuristics the query strategy
+                # (which not only depends on the query statement but the table
+                # size and many other things) may contain an inner loop on
+                # "reports" table which is one of the largest tables. This
+                # separate query of file table results a query strategy for the
+                # previous query which doesn't contain such an inner loop. See
+                # EXPLAIN SELECT columns FROM ...
+                file_ids = set(map(lambda r: r[2], query_result))
+                all_files = dict()
+                for chunk in util.chunks(file_ids, SQLITE_MAX_VARIABLE_NUMBER):
+                    all_files.update(dict(session.query(File.id, File.filepath)
+                                     .filter(File.id.in_(chunk)).all()))
+
                 for run_id, report_id, file_id, line, column, d_status, \
                     bug_id, checker_msg, checker, severity, detected_at,\
-                    fixed_at, r_status, path, bug_path_len, analyzer_name \
+                    fixed_at, r_status, bug_path_len, analyzer_name \
                         in query_result:
 
                     review_data = create_review_data(r_status)
                     results.append(
                         ReportData(runId=run_id,
                                    bugHash=bug_id,
-                                   checkedFile=path,
+                                   checkedFile=all_files[file_id],
                                    checkerMsg=checker_msg,
                                    reportId=report_id,
                                    fileId=file_id,
@@ -1502,9 +1548,10 @@ class ThriftRequestHandler(object):
         limit = verify_limit_range(limit)
 
         results = []
-        with DBSession(self.__Session) as session:
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter)
+
+        with DBSession(self._Session) as session:
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter)
 
             count_expr = create_count_expression(report_filter)
             q = session.query(Run.id,
@@ -1512,14 +1559,9 @@ class ThriftRequestHandler(object):
                               count_expr) \
                 .select_from(Report)
 
-            q = q.outerjoin(File, Report.file_id == File.id) \
-                .outerjoin(ReviewStatus,
-                           ReviewStatus.bug_hash == Report.bug_id) \
-                .outerjoin(Run,
-                           Report.run_id == Run.id) \
-                .filter(filter_expression) \
-                .order_by(Run.name) \
-                .group_by(Run.id)
+            q = apply_report_filter(
+                q, filter_expression, join_tables + [Run])
+            q = q.order_by(Run.name).group_by(Run.id)
 
             if limit:
                 q = q.limit(limit).offset(offset)
@@ -1537,12 +1579,12 @@ class ThriftRequestHandler(object):
     def getRunResultCount(self, run_ids, report_filter, cmp_data):
         self.__require_access()
 
-        with DBSession(self.__Session) as session:
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter, cmp_data)
+        with DBSession(self._Session) as session:
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter, cmp_data)
 
             q = session.query(Report.bug_id)
-            q = apply_report_filter(q, filter_expression)
+            q = apply_report_filter(q, filter_expression, join_tables)
 
             if report_filter is not None and report_filter.isUnique:
                 q = q.group_by(Report.bug_id)
@@ -1577,7 +1619,7 @@ class ThriftRequestHandler(object):
          - reportId
         """
         self.__require_access()
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             return get_report_details(session, [reportId])[reportId]
 
     def _setReviewStatus(self, session, report_hash, status,
@@ -1598,7 +1640,7 @@ class ThriftRequestHandler(object):
         old_msg = review_status.message or None
 
         new_status = review_status_str(status)
-        new_user = self.__get_username()
+        new_user = self._get_username()
         new_message = message.encode('utf8') if message else b''
 
         # Review status is a shared table among runs. When multiple runs
@@ -1647,8 +1689,8 @@ class ThriftRequestHandler(object):
         """
         Return True if review status change is disabled.
         """
-        with DBSession(self.__config_database) as session:
-            product = session.query(Product).get(self.__product.id)
+        with DBSession(self._config_database) as session:
+            product = session.query(Product).get(self._product.id)
             return product.is_review_status_change_disabled
 
     @exc_to_thrift_reqfail
@@ -1665,7 +1707,7 @@ class ThriftRequestHandler(object):
             raise codechecker_api_shared.ttypes.RequestFailed(
                 codechecker_api_shared.ttypes.ErrorCode.GENERAL, msg)
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             report = session.query(Report).get(report_id)
             if report:
                 res = self._setReviewStatus(
@@ -1678,7 +1720,7 @@ class ThriftRequestHandler(object):
 
             LOG.info("Review status of report '%s' was changed to '%s' by %s.",
                      report_id, review_status_str(status),
-                     self.__get_username())
+                     self._get_username())
 
         return res
 
@@ -1690,7 +1732,7 @@ class ThriftRequestHandler(object):
         """
         self.__require_access()
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             report = session.query(Report).get(report_id)
             if report:
                 result = []
@@ -1723,7 +1765,7 @@ class ThriftRequestHandler(object):
             Return the number of comments for the given bug.
         """
         self.__require_access()
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             report = session.query(Report).get(report_id)
             if report:
                 commentCount = session.query(Comment) \
@@ -1746,7 +1788,7 @@ class ThriftRequestHandler(object):
                 codechecker_api_shared.ttypes.ErrorCode.GENERAL,
                 'The comment message can not be empty!')
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             report = session.query(Report).get(report_id)
             if report:
                 comment = self.__add_comment(report.bug_id,
@@ -1777,9 +1819,9 @@ class ThriftRequestHandler(object):
                 codechecker_api_shared.ttypes.ErrorCode.GENERAL,
                 'The comment message can not be empty!')
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
 
-            user = self.__get_username()
+            user = self._get_username()
 
             comment = session.query(Comment).get(comment_id)
             if comment:
@@ -1823,9 +1865,9 @@ class ThriftRequestHandler(object):
         """
         self.__require_access()
 
-        user = self.__get_username()
+        user = self._get_username()
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
 
             comment = session.query(Comment).get(comment_id)
             if comment:
@@ -1838,7 +1880,7 @@ class ThriftRequestHandler(object):
 
                 LOG.info("Comment '%s...' was removed from bug hash '%s' by "
                          "'%s'.", comment.message[:10], comment.bug_hash,
-                         self.__get_username())
+                         self._get_username())
 
                 return True
             else:
@@ -1897,7 +1939,7 @@ class ThriftRequestHandler(object):
          - enum Encoding
         """
         self.__require_access()
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             sourcefile = session.query(File).get(fileId)
 
             if sourcefile is None:
@@ -1922,7 +1964,7 @@ class ThriftRequestHandler(object):
     @timeit
     def getLinesInSourceFileContents(self, lines_in_files_requested, encoding):
         self.__require_access()
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             res = defaultdict(lambda: defaultdict(str))
             for lines_in_file in lines_in_files_requested:
                 if lines_in_file.fileId is None:
@@ -1954,9 +1996,9 @@ class ThriftRequestHandler(object):
         limit = verify_limit_range(limit)
 
         results = []
-        with DBSession(self.__Session) as session:
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter, cmp_data)
+        with DBSession(self._Session) as session:
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter, cmp_data)
 
             is_unique = report_filter is not None and report_filter.isUnique
             if is_unique:
@@ -1970,7 +2012,7 @@ class ThriftRequestHandler(object):
                                   Report.severity,
                                   func.count(Report.id))
 
-            q = apply_report_filter(q, filter_expression)
+            q = apply_report_filter(q, filter_expression, join_tables)
 
             if is_unique:
                 q = q.group_by(Report.bug_id).subquery()
@@ -2008,9 +2050,9 @@ class ThriftRequestHandler(object):
         limit = verify_limit_range(limit)
 
         results = {}
-        with DBSession(self.__Session) as session:
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter, cmp_data)
+        with DBSession(self._Session) as session:
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter, cmp_data)
 
             is_unique = report_filter is not None and report_filter.isUnique
             if is_unique:
@@ -2021,7 +2063,7 @@ class ThriftRequestHandler(object):
                 q = session.query(Report.analyzer_name,
                                   func.count(Report.id))
 
-            q = apply_report_filter(q, filter_expression)
+            q = apply_report_filter(q, filter_expression, join_tables)
 
             if is_unique:
                 q = q.group_by(Report.bug_id).subquery()
@@ -2051,9 +2093,9 @@ class ThriftRequestHandler(object):
         """
         self.__require_access()
         results = {}
-        with DBSession(self.__Session) as session:
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter, cmp_data)
+        with DBSession(self._Session) as session:
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter, cmp_data)
 
             is_unique = report_filter is not None and report_filter.isUnique
             if is_unique:
@@ -2063,7 +2105,7 @@ class ThriftRequestHandler(object):
                 q = session.query(Report.severity,
                                   func.count(Report.id))
 
-            q = apply_report_filter(q, filter_expression)
+            q = apply_report_filter(q, filter_expression, join_tables)
 
             if is_unique:
                 q = q.group_by(Report.bug_id).subquery()
@@ -2090,9 +2132,9 @@ class ThriftRequestHandler(object):
         limit = verify_limit_range(limit)
 
         results = {}
-        with DBSession(self.__Session) as session:
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter, cmp_data)
+        with DBSession(self._Session) as session:
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter, cmp_data)
 
             is_unique = report_filter is not None and report_filter.isUnique
             if is_unique:
@@ -2103,7 +2145,7 @@ class ThriftRequestHandler(object):
                 q = session.query(Report.checker_message,
                                   func.count(Report.id))
 
-            q = apply_report_filter(q, filter_expression)
+            q = apply_report_filter(q, filter_expression, join_tables)
 
             if is_unique:
                 q = q.group_by(Report.bug_id).subquery()
@@ -2131,9 +2173,9 @@ class ThriftRequestHandler(object):
         """
         self.__require_access()
         results = defaultdict(int)
-        with DBSession(self.__Session) as session:
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter, cmp_data)
+        with DBSession(self._Session) as session:
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter, cmp_data)
 
             is_unique = report_filter is not None and report_filter.isUnique
             if is_unique:
@@ -2145,7 +2187,8 @@ class ThriftRequestHandler(object):
                                   ReviewStatus.status,
                                   func.count(Report.id))
 
-            q = apply_report_filter(q, filter_expression)
+            join_tables.append(ReviewStatus)
+            q = apply_report_filter(q, filter_expression, join_tables)
 
             if is_unique:
                 q = q.group_by(Report.bug_id).subquery()
@@ -2179,13 +2222,14 @@ class ThriftRequestHandler(object):
         limit = verify_limit_range(limit)
 
         results = {}
-        with DBSession(self.__Session) as session:
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter, cmp_data)
+        with DBSession(self._Session) as session:
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter, cmp_data)
 
             stmt = session.query(Report.bug_id,
                                  Report.file_id)
-            stmt = apply_report_filter(stmt, filter_expression)
+            stmt = apply_report_filter(stmt, filter_expression,
+                                       join_tables)
 
             if report_filter is not None and report_filter.isUnique:
                 stmt = stmt.group_by(Report.bug_id, Report.file_id)
@@ -2228,9 +2272,9 @@ class ThriftRequestHandler(object):
         limit = verify_limit_range(limit)
 
         results = []
-        with DBSession(self.__Session) as session:
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter, cmp_data)
+        with DBSession(self._Session) as session:
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter, cmp_data)
 
             tag_run_ids = session.query(RunHistory.run_id.distinct())
 
@@ -2243,13 +2287,11 @@ class ThriftRequestHandler(object):
             report_cnt_q = session.query(Report.run_id,
                                          Report.bug_id,
                                          Report.detected_at,
-                                         Report.fixed_at) \
-                .outerjoin(File, Report.file_id == File.id) \
-                .outerjoin(ReviewStatus,
-                           ReviewStatus.bug_hash == Report.bug_id) \
-                .filter(filter_expression) \
-                .filter(Report.run_id.in_(tag_run_ids)) \
-                .subquery()
+                                         Report.fixed_at)
+            report_cnt_q = apply_report_filter(
+                report_cnt_q, filter_expression, join_tables)
+            report_cnt_q = report_cnt_q.filter(
+                Report.run_id.in_(tag_run_ids)).subquery()
 
             is_unique = report_filter is not None and report_filter.isUnique
             count_expr = func.count(report_cnt_q.c.bug_id if not is_unique
@@ -2311,16 +2353,16 @@ class ThriftRequestHandler(object):
         """
         self.__require_access()
         results = {}
-        with DBSession(self.__Session) as session:
-            filter_expression = process_report_filter(session, run_ids,
-                                                      report_filter, cmp_data)
+        with DBSession(self._Session) as session:
+            filter_expression, join_tables = process_report_filter(
+                session, run_ids, report_filter, cmp_data)
 
             count_expr = func.count(literal_column('*'))
 
             q = session.query(Report.detection_status,
                               count_expr)
 
-            q = apply_report_filter(q, filter_expression)
+            q = apply_report_filter(q, filter_expression, join_tables)
 
             detection_stats = q.group_by(Report.detection_status).all()
 
@@ -2356,7 +2398,7 @@ class ThriftRequestHandler(object):
         self.__require_access()
 
         res = defaultdict(list)
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             query, sub_q = get_failed_files_query(
                 session, run_ids, [AnalyzerStatistic.failed_files, Run.name],
                 [RunHistory.run_id])
@@ -2399,7 +2441,8 @@ class ThriftRequestHandler(object):
                 failed = True
         return not failed
 
-    def __removeReports(self, session, report_ids, chunk_size=500):
+    def _removeReports(self, session, report_ids,
+                       chunk_size=SQLITE_MAX_VARIABLE_NUMBER):
         """
         Removing reports in chunks.
         """
@@ -2419,29 +2462,25 @@ class ThriftRequestHandler(object):
         if cmp_data and cmp_data.runIds:
             run_ids.extend(cmp_data.runIds)
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             check_remove_runs_lock(session, run_ids)
 
             try:
-                filter_expression = process_report_filter(session, run_ids,
-                                                          report_filter,
-                                                          cmp_data)
+                filter_expression, join_tables = process_report_filter(
+                    session, run_ids, report_filter, cmp_data)
 
-                q = session.query(Report.id) \
-                    .outerjoin(File, Report.file_id == File.id) \
-                    .outerjoin(ReviewStatus,
-                               ReviewStatus.bug_hash == Report.bug_id) \
-                    .filter(filter_expression)
+                q = session.query(Report.id)
+                q = apply_report_filter(q, filter_expression, join_tables)
 
                 reports_to_delete = [r[0] for r in q]
                 if reports_to_delete:
-                    self.__removeReports(session, reports_to_delete)
+                    self._removeReports(session, reports_to_delete)
 
                 session.commit()
                 session.close()
 
                 LOG.info("The following reports were removed by '%s': %s",
-                         self.__get_username(), reports_to_delete)
+                         self._get_username(), reports_to_delete)
             except Exception as ex:
                 session.rollback()
                 LOG.error("Database cleanup failed.")
@@ -2449,7 +2488,7 @@ class ThriftRequestHandler(object):
                 return False
 
         # Remove unused data (files, comments, etc.) from the database.
-        db_cleanup.remove_unused_data(self.__Session)
+        db_cleanup.remove_unused_data(self._Session)
 
         return True
 
@@ -2459,7 +2498,7 @@ class ThriftRequestHandler(object):
         self.__require_store()
 
         # Remove the whole run.
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             check_remove_runs_lock(session, [run_id])
 
             if not run_filter:
@@ -2474,10 +2513,10 @@ class ThriftRequestHandler(object):
 
             runs = run_filter.names if run_filter.names else run_filter.ids
             LOG.info("Runs '%s' were removed by '%s'.", runs,
-                     self.__get_username())
+                     self._get_username())
 
         # Remove unused data (files, comments, etc.) from the database.
-        db_cleanup.remove_unused_data(self.__Session)
+        db_cleanup.remove_unused_data(self._Session)
 
         return True
 
@@ -2492,7 +2531,7 @@ class ThriftRequestHandler(object):
             raise codechecker_api_shared.ttypes.RequestFailed(
                 codechecker_api_shared.ttypes.ErrorCode.GENERAL, msg)
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             check_new_run_name = session.query(Run) \
                 .filter(Run.name == new_run_name) \
                 .all()
@@ -2512,7 +2551,7 @@ class ThriftRequestHandler(object):
 
                 LOG.info("Run name '%s' (%d) was changed to %s by '%s'.",
                          old_run_name, run_id, new_run_name,
-                         self.__get_username())
+                         self._get_username())
 
                 return True
             else:
@@ -2540,9 +2579,9 @@ class ThriftRequestHandler(object):
         Adds a new source if it does not exist or updates an old one.
         """
         self.__require_admin()
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             component = session.query(SourceComponent).get(name)
-            user = self.__auth_session.user if self.__auth_session else None
+            user = self._auth_session.user if self._auth_session else None
 
             if component:
                 component.value = value.encode('utf-8')
@@ -2566,7 +2605,7 @@ class ThriftRequestHandler(object):
         Returns the available source components.
         """
         self.__require_access()
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             q = session.query(SourceComponent)
 
             if component_filter:
@@ -2603,13 +2642,13 @@ class ThriftRequestHandler(object):
         """
         self.__require_admin()
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             component = session.query(SourceComponent).get(name)
             if component:
                 session.delete(component)
                 session.commit()
                 LOG.info("Source component '%s' has been removed by '%s'",
-                         name, self.__get_username())
+                         name, self._get_username())
                 return True
             else:
                 msg = 'Source component ' + str(name) + \
@@ -2625,7 +2664,7 @@ class ThriftRequestHandler(object):
         if not file_hashes:
             return []
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
 
             q = session.query(FileContent) \
                 .options(sqlalchemy.orm.load_only('content_hash')) \
@@ -2634,617 +2673,23 @@ class ThriftRequestHandler(object):
             return list(set(file_hashes) -
                         set([fc.content_hash for fc in q]))
 
-    def __store_source_files(self, source_root, filename_to_hash,
-                             trim_path_prefixes):
-        """
-        Storing file contents from plist.
-        """
-
-        file_path_to_id = {}
-
-        for file_name, file_hash in filename_to_hash.items():
-            source_file_name = os.path.join(source_root,
-                                            file_name.strip("/"))
-            source_file_name = os.path.realpath(source_file_name)
-            LOG.debug("Storing source file: %s", source_file_name)
-            trimmed_file_path = util.trim_path_prefixes(file_name,
-                                                        trim_path_prefixes)
-
-            if not os.path.isfile(source_file_name):
-                # The file was not in the ZIP file, because we already
-                # have the content. Let's check if we already have a file
-                # record in the database or we need to add one.
-
-                LOG.debug('%s not found or already stored.', trimmed_file_path)
-                with DBSession(self.__Session) as session:
-                    fid = store_handler.addFileRecord(session,
-                                                      trimmed_file_path,
-                                                      file_hash)
-                if not fid:
-                    LOG.error("File ID for %s is not found in the DB with "
-                              "content hash %s. Missing from ZIP?",
-                              source_file_name, file_hash)
-                file_path_to_id[trimmed_file_path] = fid
-                LOG.debug("%d fileid found", fid)
-                continue
-
-            with DBSession(self.__Session) as session:
-                file_path_to_id[trimmed_file_path] = \
-                    store_handler.addFileContent(session,
-                                                 trimmed_file_path,
-                                                 source_file_name,
-                                                 file_hash,
-                                                 None)
-
-        return file_path_to_id
-
-    def __store_reports(self, session, report_dir, source_root, run_id,
-                        file_path_to_id, run_history_time, severity_map,
-                        wrong_src_code_comments, skip_handler,
-                        checkers, trim_path_prefixes):
-        """
-        Parse up and store the plist report files.
-        """
-
-        all_reports = session.query(Report) \
-            .filter(Report.run_id == run_id) \
-            .all()
-
-        hash_map_reports = defaultdict(list)
-        for report in all_reports:
-            hash_map_reports[report.bug_id].append(report)
-
-        already_added = set()
-        new_bug_hashes = set()
-
-        # Get checker names which was enabled during the analysis.
-        enabled_checkers = set()
-        disabled_checkers = set()
-        checker_to_analyzer = dict()
-        for analyzer_name, analyzer_checkers in checkers.items():
-            if isinstance(analyzer_checkers, dict):
-                for checker_name, enabled in analyzer_checkers.items():
-                    checker_to_analyzer[checker_name] = analyzer_name
-                    if enabled:
-                        enabled_checkers.add(checker_name)
-                    else:
-                        disabled_checkers.add(checker_name)
-            else:
-                enabled_checkers.update(analyzer_checkers)
-
-                for checker_name in analyzer_checkers:
-                    checker_to_analyzer[checker_name] = analyzer_name
-
-        def checker_is_unavailable(checker_name):
-            """
-            Returns True if the given checker is unavailable.
-
-            We filter out checkers which start with 'clang-diagnostic-' because
-            these are warnings and the warning list is not available right now.
-
-            FIXME: using the 'diagtool' could be a solution later so the
-            client can send the warning list to the server.
-            """
-            return not checker_name.startswith('clang-diagnostic-') and \
-                enabled_checkers and checker_name not in enabled_checkers
-
-        def get_analyzer_name(report):
-            """ Get analyzer name for the given report. """
-            analyzer_name = checker_to_analyzer.get(report.check_name)
-            if analyzer_name:
-                return analyzer_name
-
-            if report.metadata:
-                return report.metadata.get("analyzer", {}).get("name")
-
-            if report.check_name.startswith('clang-diagnostic-'):
-                return 'clang-tidy'
-
-        # Processing PList files.
-        _, _, report_files = next(os.walk(report_dir), ([], [], []))
-        all_report_checkers = set()
-        for f in report_files:
-            if not f.endswith('.plist'):
-                continue
-
-            LOG.debug("Parsing input file '%s'", f)
-
-            try:
-                files, reports = plist_parser.parse_plist_file(
-                    os.path.join(report_dir, f))
-            except Exception as ex:
-                LOG.error('Parsing the plist failed: %s', str(ex))
-                continue
-            trimmed_files = {}
-            file_ids = {}
-            if reports:
-                missing_ids_for_files = []
-
-                for k, v in files.items():
-                    trimmed_files[k] = \
-                        util.trim_path_prefixes(v, trim_path_prefixes)
-
-                for file_name in trimmed_files.values():
-
-                    file_id = file_path_to_id.get(file_name, -1)
-                    if file_id == -1:
-                        missing_ids_for_files.append(file_name)
-                        continue
-
-                    file_ids[file_name] = file_id
-
-                if missing_ids_for_files:
-                    LOG.error("Failed to get file path id for '%s'!",
-                              ' '.join(missing_ids_for_files))
-                    continue
-
-            # Store report.
-            for report in reports:
-                checker_name = report.main['check_name']
-                all_report_checkers.add(checker_name)
-
-                report.trim_path_prefixes(trim_path_prefixes)
-                source_file = report.file_path
-
-                if skip_handler.should_skip(source_file):
-                    continue
-                bug_paths, bug_events, bug_extended_data = \
-                    store_handler.collect_paths_events(report, file_ids,
-                                                       trimmed_files)
-                report_path_hash = get_report_path_hash(report)
-                if report_path_hash in already_added:
-                    LOG.debug('Not storing report. Already added')
-                    LOG.debug(report)
-                    continue
-
-                LOG.debug("Storing check results to the database.")
-
-                LOG.debug("Storing report")
-                bug_id = report.main[
-                    'issue_hash_content_of_line_in_context']
-
-                detection_status = 'new'
-                detected_at = run_history_time
-
-                if bug_id in hash_map_reports:
-                    old_report = hash_map_reports[bug_id][0]
-                    old_status = old_report.detection_status
-                    detection_status = 'reopened' \
-                        if old_status == 'resolved' else 'unresolved'
-                    detected_at = old_report.detected_at
-
-                analyzer_name = get_analyzer_name(report)
-                report_id = store_handler.addReport(
-                    session,
-                    run_id,
-                    file_ids[source_file],
-                    report.main,
-                    bug_paths,
-                    bug_events,
-                    bug_extended_data,
-                    detection_status,
-                    detected_at,
-                    severity_map,
-                    analyzer_name)
-
-                new_bug_hashes.add(bug_id)
-                already_added.add(report_path_hash)
-
-                last_report_event = report.bug_path[-1]
-
-                # The original file path is needed here not the trimmed
-                # because the source files are extracted as the original
-                # file path.
-                file_name = \
-                    files[last_report_event['location']['file']]
-
-                source_file_name = os.path.realpath(
-                    os.path.join(source_root, file_name.strip("/")))
-
-                if os.path.isfile(source_file_name):
-                    report_line = last_report_event['location']['line']
-                    source_file = os.path.basename(file_name)
-                    src_comment_data = \
-                        parse_codechecker_review_comment(source_file_name,
-                                                         report_line,
-                                                         checker_name)
-                    if len(src_comment_data) == 1:
-                        status = src_comment_data[0]['status']
-                        rw_status = ttypes.ReviewStatus.FALSE_POSITIVE
-                        if status == 'confirmed':
-                            rw_status = ttypes.ReviewStatus.CONFIRMED
-                        elif status == 'intentional':
-                            rw_status = ttypes.ReviewStatus.INTENTIONAL
-
-                        self._setReviewStatus(session,
-                                              bug_id,
-                                              rw_status,
-                                              src_comment_data[0]['message'],
-                                              run_history_time)
-                    elif len(src_comment_data) > 1:
-                        LOG.warning(
-                            "Multiple source code comment can be found "
-                            "for '%s' checker in '%s' at line %s. "
-                            "This bug will not be suppressed!",
-                            checker_name, source_file, report_line)
-
-                        wrong_src_code = "{0}|{1}|{2}".format(source_file,
-                                                              report_line,
-                                                              checker_name)
-                        wrong_src_code_comments.append(wrong_src_code)
-
-                LOG.debug("Storing done for report %d", report_id)
-
-        # If a checker was found in a plist file it can not be disabled so we
-        # will remove these checkers from the disabled checkers list and add
-        # these to the enabled checkers list.
-        disabled_checkers -= all_report_checkers
-        enabled_checkers |= all_report_checkers
-
-        reports_to_delete = set()
-        for bug_hash, reports in hash_map_reports.items():
-            if bug_hash in new_bug_hashes:
-                reports_to_delete.update([x.id for x in reports])
-            else:
-                for report in reports:
-                    # We set the fix date of a report only if the report
-                    # has not been fixed before.
-                    if report.fixed_at:
-                        continue
-
-                    checker = report.checker_id
-                    if checker in disabled_checkers:
-                        report.detection_status = 'off'
-                    elif checker_is_unavailable(checker):
-                        report.detection_status = 'unavailable'
-                    else:
-                        report.detection_status = 'resolved'
-
-                    report.fixed_at = run_history_time
-
-        if reports_to_delete:
-            self.__removeReports(session, list(reports_to_delete))
-
-    @staticmethod
-    @exc_to_thrift_reqfail
-    def __store_run_lock(session, name, username):
-        """
-        Store a RunLock record for the given run name into the database.
-        """
-        try:
-            # If the run can be stored, we need to lock it first. If there is
-            # already a lock in the database for the given run name which is
-            # expired and multiple processes are trying to get this entry from
-            # the database for update we may get the following exception:
-            # could not obtain lock on row in relation "run_locks"
-            # This is the reason why we have to wrap this query to a try/except
-            # block.
-            run_lock = session.query(RunLock) \
-                .filter(RunLock.name == name) \
-                .with_for_update(nowait=True).one_or_none()
-        except (sqlalchemy.exc.OperationalError,
-                sqlalchemy.exc.ProgrammingError) as ex:
-            LOG.error("Failed to get run lock for '%s': %s", name, ex)
-            raise codechecker_api_shared.ttypes.RequestFailed(
-                codechecker_api_shared.ttypes.ErrorCode.DATABASE,
-                "Someone is already storing to the same run. Please wait "
-                "while the other storage is finished and try it again.")
-
-        if not run_lock:
-            # If there is no lock record for the given run name, the run
-            # is not locked -- create a new lock.
-            run_lock = RunLock(name, username)
-            session.add(run_lock)
-        elif run_lock.has_expired(
-                db_cleanup.RUN_LOCK_TIMEOUT_IN_DATABASE):
-            # There can be a lock in the database, which has already
-            # expired. In this case, we assume that the previous operation
-            # has failed, and thus, we can re-use the already present lock.
-            run_lock.touch()
-            run_lock.username = username
-        else:
-            # In case the lock exists and it has not expired, we must
-            # consider the run a locked one.
-            when = run_lock.when_expires(
-                db_cleanup.RUN_LOCK_TIMEOUT_IN_DATABASE)
-
-            username = run_lock.username if run_lock.username is not None \
-                else "another user"
-
-            LOG.info("Refusing to store into run '%s' as it is locked by "
-                     "%s. Lock will expire at '%s'.", name, username, when)
-            raise codechecker_api_shared.ttypes.RequestFailed(
-                codechecker_api_shared.ttypes.ErrorCode.DATABASE,
-                "The run named '{0}' is being stored into by {1}. If the "
-                "other store operation has failed, this lock will expire "
-                "at '{2}'.".format(name, username, when))
-
-        # At any rate, if the lock has been created or updated, commit it
-        # into the database.
-        try:
-            session.commit()
-        except (sqlalchemy.exc.IntegrityError,
-                sqlalchemy.orm.exc.StaleDataError):
-            # The commit of this lock can fail.
-            #
-            # In case two store ops attempt to lock the same run name at the
-            # same time, committing the lock in the transaction that commits
-            # later will result in an IntegrityError due to the primary key
-            # constraint.
-            #
-            # In case two store ops attempt to lock the same run name with
-            # reuse and one of the operation hangs long enough before COMMIT
-            # so that the other operation commits and thus removes the lock
-            # record, StaleDataError is raised. In this case, also consider
-            # the run locked, as the data changed while the transaction was
-            # waiting, as another run wholly completed.
-
-            LOG.info("Run '%s' got locked while current transaction "
-                     "tried to acquire a lock. Considering run as locked.",
-                     name)
-            raise codechecker_api_shared.ttypes.RequestFailed(
-                codechecker_api_shared.ttypes.ErrorCode.DATABASE,
-                "The run named '{0}' is being stored into by another "
-                "user.".format(name))
-
-    @staticmethod
-    @exc_to_thrift_reqfail
-    def __free_run_lock(session, name):
-        """
-        Remove the lock from the database for the given run name.
-        """
-        # Using with_for_update() here so the database (in case it supports
-        # this operation) locks the lock record's row from any other access.
-        run_lock = session.query(RunLock) \
-            .filter(RunLock.name == name) \
-            .with_for_update(nowait=True).one()
-        session.delete(run_lock)
-        session.commit()
-
-    def __check_run_limit(self, run_name):
-        """
-        Checks the maximum allowed of uploadable runs for the current product.
-        """
-        max_run_count = self.__manager.get_max_run_count()
-
-        with DBSession(self.__config_database) as session:
-            product = session.query(Product).get(self.__product.id)
-            if product.run_limit:
-                max_run_count = product.run_limit
-
-        # Session that handles constraints on the run.
-        with DBSession(self.__Session) as session:
-            if max_run_count:
-                LOG.debug("Check the maximum number of allowed "
-                          "runs which is %d", max_run_count)
-
-                run = session.query(Run) \
-                    .filter(Run.name == run_name) \
-                    .one_or_none()
-
-                # If max_run_count is not set in the config file, it will allow
-                # the user to upload unlimited runs.
-
-                run_count = session.query(Run.id).count()
-
-                # If we are not updating a run or the run count is reached the
-                # limit it will throw an exception.
-                if not run and run_count >= max_run_count:
-                    remove_run_count = run_count - max_run_count + 1
-                    raise codechecker_api_shared.ttypes.RequestFailed(
-                        codechecker_api_shared.ttypes.ErrorCode.GENERAL,
-                        'You reached the maximum number of allowed runs '
-                        '({0}/{1})! Please remove at least {2} run(s) before '
-                        'you try it again.'.format(run_count,
-                                                   max_run_count,
-                                                   remove_run_count))
-
     @exc_to_thrift_reqfail
     @timeit
     def massStoreRun(self, name, tag, version, b64zip, force,
                      trim_path_prefixes, description):
         self.__require_store()
-        start_time = time.time()
 
-        user = self.__auth_session.user if self.__auth_session else None
-
-        # Check constraints of the run.
-        self.__check_run_limit(name)
-
-        with DBSession(self.__Session) as session:
-            ThriftRequestHandler.__store_run_lock(session, name, user)
-
-        wrong_src_code_comments = []
-        try:
-            with TemporaryDirectory() as zip_dir:
-                LOG.info("[%s] Unzip storage file...", name)
-                zip_size = unzip(b64zip, zip_dir)
-                LOG.info("[%s] Unzip storage file done.", name)
-
-                if zip_size == 0:
-                    raise codechecker_api_shared.ttypes.RequestFailed(
-                        codechecker_api_shared.ttypes.
-                        ErrorCode.GENERAL,
-                        "The received zip file content is empty"
-                        " nothing was stored.")
-
-                LOG.debug("Using unzipped folder '%s'", zip_dir)
-
-                source_root = os.path.join(zip_dir, 'root')
-                report_dir = os.path.join(zip_dir, 'reports')
-                metadata_file = os.path.join(report_dir, 'metadata.json')
-                skip_file = os.path.join(report_dir, 'skip_file')
-                content_hash_file = os.path.join(zip_dir,
-                                                 'content_hashes.json')
-
-                skip_handler = skiplist_handler.SkipListHandler()
-                if os.path.exists(skip_file):
-                    LOG.debug("Pocessing skip file %s", skip_file)
-                    try:
-                        with open(skip_file,
-                                  encoding="utf-8",
-                                  errors="ignore") as sf:
-                            skip_content = sf.read()
-                            skip_handler = \
-                                skiplist_handler.SkipListHandler(skip_content)
-                            LOG.debug(skip_content)
-                    except (IOError, OSError) as err:
-                        LOG.error("Failed to open skip file")
-                        LOG.error(err)
-
-                filename_to_hash = util.load_json_or_empty(content_hash_file,
-                                                           {})
-
-                LOG.info("[%s] Store source files...", name)
-                file_path_to_id = self.__store_source_files(source_root,
-                                                            filename_to_hash,
-                                                            trim_path_prefixes)
-                LOG.info("[%s] Store source files done.", name)
-
-                run_history_time = datetime.now()
-
-                metadata_parser = MetadataInfoParser()
-                check_commands, check_durations, cc_version, statistics, \
-                    checkers = metadata_parser.get_metadata_info(metadata_file)
-
-                command = ''
-                if len(check_commands) == 1:
-                    command = list(check_commands)[0]
-                elif len(check_commands) > 1:
-                    command = "multiple analyze calls: " + \
-                              '; '.join(check_commands)
-
-                durations = 0
-                if check_durations:
-                    # Round the duration to seconds.
-                    durations = int(sum(check_durations))
-
-                # When we use multiple server instances and we try to run
-                # multiple storage to each server which contain at least two
-                # reports which have the same report hash and have source code
-                # comments it is possible that the following exception will be
-                # thrown: (psycopg2.extensions.TransactionRollbackError)
-                # deadlock detected.
-                # The problem is that the report hash is the key for the
-                # review data table and both of the store actions try to
-                # update the same review data row.
-                # Neither of the two processes can continue, and they will wait
-                # for each other indefinitely. PostgreSQL in this case will
-                # terminate one transaction with the above exception.
-                # For this reason in case of failure we will wait some seconds
-                # and try to run the storage again.
-                # For more information see #2655 and #2653 issues on github.
-                max_num_of_tries = 3
-                num_of_tries = 0
-                sec_to_wait_after_failure = 60
-                while True:
-                    try:
-                        # This session's transaction buffer stores the actual
-                        # run data into the database.
-                        with DBSession(self.__Session) as session:
-                            # Load the lock record for "FOR UPDATE" so that the
-                            # transaction that handles the run's store
-                            # operations has a lock on the database row itself.
-                            run_lock = session.query(RunLock) \
-                                .filter(RunLock.name == name) \
-                                .with_for_update(nowait=True).one()
-
-                            # Do not remove this seemingly dummy print, we need
-                            # to make sure that the execution of the SQL
-                            # statement is not optimised away and the fetched
-                            # row is not garbage collected.
-                            LOG.debug("Storing into run '%s' locked at '%s'.",
-                                      name, run_lock.locked_at)
-
-                            # Actual store operation begins here.
-                            user_name = self.__get_username()
-                            run_id = \
-                                store_handler.addCheckerRun(session,
-                                                            command,
-                                                            name,
-                                                            tag,
-                                                            user_name,
-                                                            run_history_time,
-                                                            version,
-                                                            force,
-                                                            cc_version,
-                                                            statistics,
-                                                            description)
-
-                            LOG.info("[%s] Store reports...", name)
-                            self.__store_reports(session,
-                                                 report_dir,
-                                                 source_root,
-                                                 run_id,
-                                                 file_path_to_id,
-                                                 run_history_time,
-                                                 self.__context.severity_map,
-                                                 wrong_src_code_comments,
-                                                 skip_handler,
-                                                 checkers,
-                                                 trim_path_prefixes)
-                            LOG.info("[%s] Store reports done.", name)
-
-                            store_handler.setRunDuration(session,
-                                                         run_id,
-                                                         durations)
-
-                            store_handler.finishCheckerRun(session, run_id)
-
-                            session.commit()
-
-                            LOG.info("'%s' stored results (%s KB "
-                                     "/decompressed/) to run '%s' in %s "
-                                     "seconds.", user_name,
-                                     round(zip_size / 1024), name,
-                                     round(time.time() - start_time, 2))
-
-                            return run_id
-                    except (sqlalchemy.exc.OperationalError,
-                            sqlalchemy.exc.ProgrammingError) as ex:
-                        num_of_tries += 1
-
-                        if num_of_tries == max_num_of_tries:
-                            raise codechecker_api_shared.ttypes.RequestFailed(
-                                codechecker_api_shared.ttypes.
-                                ErrorCode.DATABASE,
-                                "Storing reports to the database failed: "
-                                "{0}".format(ex))
-
-                        LOG.error("Storing reports of '%s' run failed: "
-                                  "%s.\nWaiting %d sec before trying to store "
-                                  "it again!", name, ex,
-                                  sec_to_wait_after_failure)
-                        time.sleep(sec_to_wait_after_failure)
-                        sec_to_wait_after_failure *= 2
-        except Exception as ex:
-            LOG.error("Failed to store results: %s", ex)
-            import traceback
-            traceback.print_exc()
-            raise
-        finally:
-            # In any case if the "try" block's execution began, a run lock must
-            # exist, which can now be removed, as storage either completed
-            # successfully, or failed in a detectable manner.
-            # (If the failure is undetectable, the coded grace period expiry
-            # of the lock will allow further store operations to the given
-            # run name.)
-            with DBSession(self.__Session) as session:
-                ThriftRequestHandler.__free_run_lock(session, name)
-
-            if wrong_src_code_comments:
-                raise codechecker_api_shared.ttypes.RequestFailed(
-                    codechecker_api_shared.ttypes.ErrorCode.SOURCE_FILE,
-                    "Multiple source code comment can be found with the same "
-                    "checker name for same bug!",
-                    wrong_src_code_comments)
+        from codechecker_server.api.mass_store_run import MassStoreRun
+        m = MassStoreRun(self, name, tag, version, b64zip, force,
+                         trim_path_prefixes, description)
+        return m.store()
 
     @exc_to_thrift_reqfail
     @timeit
     def allowsStoringAnalysisStatistics(self):
         self.__require_store()
 
-        return True if self.__manager.get_analysis_statistics_dir() else False
+        return True if self._manager.get_analysis_statistics_dir() else False
 
     @exc_to_thrift_reqfail
     @timeit
@@ -3254,13 +2699,13 @@ class ThriftRequestHandler(object):
         cfg = dict()
 
         # Get the limit of failure zip size.
-        failure_zip_size = self.__manager.get_failure_zip_size()
+        failure_zip_size = self._manager.get_failure_zip_size()
         if failure_zip_size:
             cfg[ttypes.StoreLimitKind.FAILURE_ZIP_SIZE] = failure_zip_size
 
         # Get the limit of compilation database size.
         compilation_database_size = \
-            self.__manager.get_compilation_database_size()
+            self._manager.get_compilation_database_size()
         if compilation_database_size:
             cfg[ttypes.StoreLimitKind.COMPILATION_DATABASE_SIZE] = \
                 compilation_database_size
@@ -3272,11 +2717,11 @@ class ThriftRequestHandler(object):
     def storeAnalysisStatistics(self, run_name, b64zip):
         self.__require_store()
 
-        report_dir_store = self.__manager.get_analysis_statistics_dir()
+        report_dir_store = self._manager.get_analysis_statistics_dir()
         if report_dir_store:
             try:
                 product_dir = os.path.join(report_dir_store,
-                                           self.__product.endpoint)
+                                           self._product.endpoint)
                 # Create report store directory.
                 if not os.path.exists(product_dir):
                     os.makedirs(product_dir)
@@ -3301,7 +2746,7 @@ class ThriftRequestHandler(object):
 
         analyzer_statistics = {}
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
             run_ids = None if run_id is None else [run_id]
             run_history_ids = None if run_history_id is None \
                 else [run_history_id]
@@ -3327,7 +2772,7 @@ class ThriftRequestHandler(object):
     def exportData(self, run_filter):
         self.__require_access()
 
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
 
             # Logic for getting comments
             comment_data_list = defaultdict(list)
@@ -3371,7 +2816,7 @@ class ThriftRequestHandler(object):
     @timeit
     def importData(self, exportData):
         self.__require_admin()
-        with DBSession(self.__Session) as session:
+        with DBSession(self._Session) as session:
 
             # Logic for importing comments
             comment_bug_ids = list(exportData.comments.keys())

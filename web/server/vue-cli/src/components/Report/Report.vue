@@ -1,5 +1,15 @@
 <template>
   <v-container fluid>
+    <checker-documentation-dialog
+      :value.sync="checkerDocumentationDialog"
+      :checker-name="checkerName"
+    />
+
+    <analysis-info-dialog
+      :value.sync="analysisInfoDialog"
+      :report-id="reportId"
+    />
+
     <v-row>
       <v-col
         class="py-0"
@@ -23,8 +33,8 @@
             class="pa-0 mr-2"
             align-self="center"
           >
-            <show-documentation-button
-              :value="checkerId"
+            <analysis-info-btn
+              @click.native="openAnalysisInfoDialog"
             />
           </v-col>
 
@@ -230,15 +240,17 @@ import {
 } from "@cc/report-server-types";
 
 import { FillHeight } from "@/directives";
-import CopyBtn from "@/components/CopyBtn";
+import { AnalysisInfoDialog, CopyBtn } from "@/components";
 import { UserIcon } from "@/components/Icons";
 
 import ReportTreeKind from "@/components/Report/ReportTree/ReportTreeKind";
 
+import AnalysisInfoBtn from "./AnalysisInfoBtn";
+import CheckerDocumentationDialog from
+  "@/components/CheckerDocumentationDialog";
 import { ReportComments } from "./Comment";
 import SelectReviewStatus from "./SelectReviewStatus";
 import SelectSameReport from "./SelectSameReport";
-import ShowDocumentationButton from "./ShowDocumentationButton";
 import { ReportInfoButton, ShowReportInfoDialog } from "./ReportInfo";
 
 import ReportStepMessage from "./ReportStepMessage";
@@ -248,12 +260,14 @@ const ReportStepMessageClass = Vue.extend(ReportStepMessage);
 export default {
   name: "Report",
   components: {
+    AnalysisInfoBtn,
+    AnalysisInfoDialog,
+    CheckerDocumentationDialog,
     CopyBtn,
     ReportComments,
     ReportInfoButton,
     SelectReviewStatus,
     SelectSameReport,
-    ShowDocumentationButton,
     ShowReportInfoDialog,
     UserIcon
   },
@@ -278,12 +292,15 @@ export default {
       commentCols: 3,
       loading: true,
       bus: new Vue(),
-      annotation: null
+      annotation: null,
+      checkerDocumentationDialog: false,
+      analysisInfoDialog: false,
+      reportId: null
     };
   },
 
   computed: {
-    checkerId() {
+    checkerName() {
       return this.report ? this.report.checkerId : null;
     },
 
@@ -367,6 +384,10 @@ export default {
         fileId: attrs.fileId,
         startLine: attrs.startLine
       });
+    });
+
+    this.bus.$on("showDocumentation", () => {
+      this.checkerDocumentationDialog = true;
     });
   },
 
@@ -610,6 +631,7 @@ export default {
           id: element.$id,
           value: element.$message,
           marginLeft: marginLeft,
+          report: this.report
         }
       });
       widget.$mount();
@@ -746,6 +768,11 @@ export default {
           this.reviewData.author = author;
           this.reviewData.date = format(new Date(), "yyyy-MM-dd HH:mm:ss");
         }));
+    },
+
+    openAnalysisInfoDialog() {
+      this.reportId = this.report.reportId;
+      this.analysisInfoDialog = true;
     }
   }
 };

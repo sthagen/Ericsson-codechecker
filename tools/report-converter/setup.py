@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 
+import os
 import setuptools
 import codechecker_report_converter
 
-with open("README.md", "r", encoding="utf-8", errors="ignore") as fh:
+readme_file_path = os.path.join(
+    "..", "..", "docs", "tools", "report-converter.md")
+
+with open(readme_file_path, "r", encoding="utf-8", errors="ignore") as fh:
     long_description = fh.read()
 
 setuptools.setup(
@@ -19,6 +23,9 @@ setuptools.setup(
     license='LICENSE.txt',
     packages=setuptools.find_packages(),
     include_package_data=True,
+    install_requires=[
+        "codechecker_report_hash"
+    ],
     classifiers=[
         "Environment :: Console",
         "Intended Audience :: Developers",
