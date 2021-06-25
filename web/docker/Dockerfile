@@ -50,6 +50,7 @@ ARG INSTALL_PG8000=no
 ARG INSTALL_PSYCOPG2=yes
 
 ENV TINI_VERSION v0.18.0
+ENV WAIT_FOR_VERSION v2.1.2
 
 RUN set -x && apt-get update -qq \
   # Prevent fail when install postgresql-client.
@@ -88,6 +89,8 @@ RUN apt-get update -qq  && \
     python3-dev \
     # gcc is needed to build psutil.
     gcc \
+    # netcat is needed for 'wait-for' script.
+    netcat \
   \
   # Install necessary runtime environment files.
   && pip3 install -r /requirements_py/requirements.txt \
@@ -125,7 +128,10 @@ RUN chmod a+x /usr/local/bin/entrypoint.sh \
   && chown codechecker:codechecker /usr/local/bin/entrypoint.sh
 
 ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
-RUN chmod +x /tini
+RUN chmod 755 /tini
+
+ADD https://raw.githubusercontent.com/eficode/wait-for/${WAIT_FOR_VERSION}/wait-for /usr/local/bin/wait-for
+RUN chmod 755 /usr/local/bin/wait-for
 
 EXPOSE 8001
 
