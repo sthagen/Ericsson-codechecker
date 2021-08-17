@@ -36,7 +36,6 @@
         "alpha.core.SizeofPtr",
         "alpha.core.TestAfterDivZero",
         "alpha.cplusplus",
-        "alpha.security.MallocOverflow",
         "alpha.security.MmapWriteExec",
         "alpha.security.ReturnPtrRange",
         "alpha.security.taint",
@@ -177,7 +176,8 @@
         "performance-move",
         "performance-no-automatic-move",
         "performance-noexcept",
-        "performance-trivially-destructible"
+        "performance-trivially-destructible",
+        "readability-suspicious-call-argument"
      ],
       "sensitive": [
         "boost",
