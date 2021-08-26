@@ -43,9 +43,8 @@ def invoke_binary_checked(binary_path, args=None, environ=None):
             encoding="utf-8",
             errors="ignore")
     except (subprocess.CalledProcessError, OSError) as e:
-        LOG.debug(
-            'Command invocation failed because of non-zero exit code!'
-            'Details: %s', str(e))
+        LOG.debug('Command invocation failed because of non-zero exit code!'
+                  'Details: %s', str(e))
         return False
     return output
 
@@ -75,7 +74,7 @@ class CTUAutodetection:
             LOG.debug('Failed to invoke command to get Clang version!')
             return None
 
-        version_parser = version.ClangVersionInfoParser()
+        version_parser = version.ClangVersionInfoParser(self.__analyzer_binary)
         version_info = version_parser.parse(analyzer_version)
 
         if not version_info:
