@@ -1,14 +1,13 @@
 <template>
-  <manage-source-component-dialog
+  <manage-cleanup-plan-dialog
     :value.sync="dialog"
   >
     <select-option
       :id="id"
-      title="Source component"
+      title="Cleanup plan"
       :bus="bus"
       :fetch-items="fetchItems"
       :selected-items="selectedItems"
-      :search="search"
       :loading="loading"
       :panel="panel"
       @clear="clear(true)"
@@ -17,7 +16,7 @@
       <template v-slot:prepend-toolbar-items>
         <v-btn
           v-if="currentProduct.administrating"
-          class="manage-components-btn"
+          class="manage-cleanup-plan-btn"
           icon
           small
           @click.stop="dialog = true"
@@ -28,25 +27,11 @@
 
       <template v-slot:icon>
         <v-icon color="grey">
-          mdi-puzzle-outline
+          mdi-sign-direction
         </v-icon>
       </template>
-
-      <template v-slot:title="{ item }">
-        <source-component-tooltip :value="item.value">
-          <template v-slot="{ on }">
-            <v-list-item-title
-              class="mr-1 filter-item-title"
-              :title="item.title"
-              v-on="on"
-            >
-              {{ item.title }}
-            </v-list-item-title>
-          </template>
-        </source-component-tooltip>
-      </template>
     </select-option>
-  </manage-source-component-dialog>
+  </manage-cleanup-plan-dialog>
 </template>
 
 <script>
@@ -54,9 +39,8 @@ import { mapGetters } from "vuex";
 import { ccService, handleThriftError } from "@cc-api";
 
 import {
-  ManageSourceComponentDialog,
-  SourceComponentTooltip
-} from "@/components/Report/SourceComponent";
+  ManageCleanupPlanDialog
+} from "@/components/Report/CleanupPlan";
 
 import SelectOption from "./SelectOption/SelectOption";
 import BaseSelectOptionFilterMixin from "./BaseSelectOptionFilter.mixin";
@@ -64,19 +48,14 @@ import BaseSelectOptionFilterMixin from "./BaseSelectOptionFilter.mixin";
 export default {
   name: "SourceComponentFilter",
   components: {
-    ManageSourceComponentDialog,
-    SelectOption,
-    SourceComponentTooltip
+    ManageCleanupPlanDialog,
+    SelectOption
   },
   mixins: [ BaseSelectOptionFilterMixin ],
 
   data() {
     return {
-      id: "source-component",
-      search: {
-        placeHolder : "Search for source components...",
-        filterItems: this.filterItems
-      },
+      id: "cleanup-plan",
       dialog: false
     };
   },
@@ -100,31 +79,29 @@ export default {
   methods: {
     updateReportFilter() {
       this.setReportFilter({
-        componentNames: this.selectedItems.map(item => item.id)
+        cleanupPlanNames: this.selectedItems.map(item => item.id)
       });
     },
 
     onReportFilterChange(key) {
-      if (key === "componentNames") return;
+      if (key === "cleanupPlanNames") return;
       this.update();
     },
 
-    fetchItems(opt={}) {
+    fetchItems() {
       this.loading = true;
 
       return new Promise(resolve => {
-        const filter = opt.query;
-        ccService.getClient().getSourceComponents(filter,
-          handleThriftError(res => {
-            resolve(res.map(component => {
-              return {
-                id : component.name,
-                title: component.name,
-                value: component.value || component.description
-              };
-            }));
-            this.loading = false;
+        ccService.getClient().getCleanupPlans(null, handleThriftError(res => {
+          resolve(res.map(cleanupPlan => {
+            return {
+              id : cleanupPlan.name,
+              title: cleanupPlan.name,
+              value: cleanupPlan.description
+            };
           }));
+          this.loading = false;
+        }));
       });
     }
   }

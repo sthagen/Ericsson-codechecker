@@ -13,8 +13,6 @@ database.
 
 import argparse
 import base64
-from git import Repo
-from git.exc import InvalidGitRepositoryError
 import hashlib
 import json
 import os
@@ -24,7 +22,7 @@ from typing import Dict, List, Set, Tuple
 import zipfile
 import zlib
 
-import concurrent.futures
+from concurrent.futures import ProcessPoolExecutor
 
 from collections import namedtuple
 
@@ -32,7 +30,6 @@ from codechecker_api.codeCheckerDBAccess_v6.ttypes import StoreLimitKind
 from codechecker_api_shared.ttypes import RequestFailed, ErrorCode
 
 from codechecker_client import client as libclient
-
 from codechecker_common import arg, logger, plist_parser, util, cmd_config
 from codechecker_common.report import Report
 from codechecker_common.output import twodim
@@ -42,6 +39,11 @@ from codechecker_report_hash.hash import HashType, replace_report_hash
 
 from codechecker_web.shared import webserver_context, host_check
 from codechecker_web.shared.env import get_default_workspace
+
+try:
+    from codechecker_client.blame_info import assemble_blame_info
+except ImportError:
+    pass
 
 LOG = logger.get_logger('system')
 
@@ -476,7 +478,7 @@ def filter_source_files_with_comments(source_file_info, main_report_positions):
     if sys.platform == "win32":
         return get_source_file_with_comments(jobs)
     else:
-        with concurrent.futures.ProcessPoolExecutor() as executor:
+        with ProcessPoolExecutor() as executor:
             return get_source_file_with_comments(jobs, executor.map)
 
 
@@ -581,49 +583,6 @@ def parse_report_files(report_files: Set[str], zip_iter=map):
             missing_source_files)
 
 
-def get_blame_info(repo: Repo, file_path: str):
-    """ Get blame info for the given file in the given git repo. """
-    tracking_branch = None
-    try:
-        # If a commit is checked out, accessing the active_branch member will
-        # throw a type error. In this case we will use the current commit hash.
-        tracking_branch = str(repo.active_branch.tracking_branch())
-    except TypeError:
-        tracking_branch = repo.head.commit.hexsha
-
-    try:
-        blame = repo.blame_incremental(repo.head.commit.hexsha, file_path)
-
-        res = {
-            'version': 'v1',
-            'tracking_branch': tracking_branch,
-            'remote_url': next(repo.remote().urls, None),
-            'commits': {},
-            'blame': []}
-
-        for b in blame:
-            commit = b.commit
-
-            if commit.hexsha not in res['commits']:
-                res['commits'][commit.hexsha] = {
-                    'author': {
-                        'name': commit.author.name,
-                        'email': commit.author.email,
-                    },
-                    'summary': commit.summary,
-                    'message': commit.message,
-                    'committed_datetime': str(commit.committed_datetime)}
-
-            res['blame'].append({
-                'from': b.linenos[0],
-                'to': b.linenos[-1],
-                'commit': commit.hexsha})
-        return res
-    except Exception as ex:
-        LOG.warning("Failed to get blame information for %s: %s",
-                    file_path, ex)
-
-
 def assemble_zip(inputs, zip_file, client):
     """Collect and compress report and source files, together with files
     contanining analysis related information into a zip file which
@@ -645,7 +604,7 @@ def assemble_zip(inputs, zip_file, client):
          changed_files,
          missing_source_files) = parse_report_files(report_files)
     else:
-        with concurrent.futures.ProcessPoolExecutor() as executor:
+        with ProcessPoolExecutor() as executor:
             (source_file_info,
              main_report_positions,
              files_to_compress,
@@ -721,26 +680,31 @@ def assemble_zip(inputs, zip_file, client):
 
             zipf.write(ftc, zip_target)
 
+        collected_file_paths = []
         for f, h in file_to_hash.items():
             if h in necessary_hashes or h in file_hash_with_review_status:
                 LOG.debug("File contents for '%s' needed by the server", f)
 
                 file_path = os.path.join('root', f.lstrip('/'))
+                collected_file_paths.append(f)
 
                 try:
                     zipf.getinfo(file_path)
                 except KeyError:
                     zipf.write(f, file_path)
 
-                try:
-                    repo = Repo(f, search_parent_directories=True)
-                    blame_info = get_blame_info(repo, f) if repo else None
-                    if blame_info:
-                        zipf.writestr(
-                            os.path.join('blame', f.lstrip('/')),
-                            json.dumps(blame_info))
-                except InvalidGitRepositoryError:
-                    pass
+        if collected_file_paths:
+            LOG.info("Collecting blame information for source files...")
+            try:
+                if assemble_blame_info(zipf, collected_file_paths):
+                    LOG.info("Collecting blame information done.")
+                else:
+                    LOG.info("No blame information found for source files.")
+            except NameError:
+                LOG.warning(
+                    "Collecting blame information has been failed. Make sure "
+                    "'git' is available on your system to hide this warning "
+                    "message.")
 
         zipf.writestr('content_hashes.json', json.dumps(file_to_hash))
 
