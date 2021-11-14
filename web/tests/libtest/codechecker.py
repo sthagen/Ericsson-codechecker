@@ -102,7 +102,7 @@ def get_diff_results(basenames, newnames, diff_type, format_type=None,
     out, err = proc.communicate()
 
     if format_type == "json":
-        return json.loads(out), err, proc.returncode
+        return json.loads(out)['reports'], err, proc.returncode
 
     return out, err, proc.returncode
 
@@ -494,7 +494,9 @@ def store(codechecker_cfg, test_project_name):
     """
     Store results from a report dir.
     """
-    report_dirs = codechecker_cfg['reportdir']
+    report_dirs = codechecker_cfg['reportdir'] \
+        if 'reportdir' in codechecker_cfg \
+        else os.path.join(codechecker_cfg['workspace'], 'reports')
     if not isinstance(report_dirs, list):
         report_dirs = [report_dirs]
 

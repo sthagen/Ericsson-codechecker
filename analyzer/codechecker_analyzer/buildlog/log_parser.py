@@ -22,10 +22,11 @@ import sys
 import tempfile
 import traceback
 
+from codechecker_report_converter.util import load_json_or_empty
+
 from codechecker_analyzer.analyzers import clangsa
 
 from codechecker_common.logger import get_logger
-from codechecker_common.util import load_json_or_empty
 
 from .. import gcc_toolchain
 from .build_action import BuildAction
@@ -1178,7 +1179,7 @@ def extend_compilation_database_entries(compilation_database):
 
             entry['command'] = ' '.join(cmd)
 
-            if '@' in entry['file']:
+            if entry['file'].startswith('@'):
                 for source_file in source_files:
                     new_entry = dict(entry)
                     new_entry['file'] = source_file

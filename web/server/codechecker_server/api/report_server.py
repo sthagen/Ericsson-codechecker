@@ -1030,8 +1030,6 @@ class ThriftRequestHandler:
                  product,
                  auth_session,
                  config_database,
-                 checker_md_docs,
-                 checker_md_docs_map,
                  package_version,
                  context):
 
@@ -1043,8 +1041,6 @@ class ThriftRequestHandler:
         self._product = product
         self._auth_session = auth_session
         self._config_database = config_database
-        self.__checker_md_docs = checker_md_docs
-        self.__checker_doc_map = checker_md_docs_map
         self.__package_version = package_version
         self._Session = Session
         self._context = context
@@ -1238,6 +1234,8 @@ class ThriftRequestHandler:
     # DEPRECATED: use getAnalysisInfo API function instead of this function.
     def getCheckCommand(self, run_history_id, run_id):
         """ Get analyzer command based on the given filter. """
+        self.__require_view()
+
         limit = None
         offset = 0
         analysis_info_filter = AnalysisInfoFilter(
@@ -1246,7 +1244,6 @@ class ThriftRequestHandler:
 
         analysis_info = self.getAnalysisInfo(
             analysis_info_filter, limit, offset)
-        self.__require_view()
 
         return "; ".join([i.analyzerCommand for i in analysis_info])
 
@@ -1254,7 +1251,7 @@ class ThriftRequestHandler:
     @timeit
     def getAnalysisInfo(self, analysis_info_filter, limit, offset):
         """ Get analysis information based on the given filter. """
-        self.__require_access()
+        self.__require_view()
 
         res: List[ttypes.AnalysisInfo] = []
         if not analysis_info_filter:
@@ -1308,7 +1305,7 @@ class ThriftRequestHandler:
     @exc_to_thrift_reqfail
     @timeit
     def getRunHistory(self, run_ids, limit, offset, run_history_filter):
-        self.__require_access()
+        self.__require_view()
 
         limit = verify_limit_range(limit)
 
@@ -1348,7 +1345,7 @@ class ThriftRequestHandler:
     @exc_to_thrift_reqfail
     @timeit
     def getRunHistoryCount(self, run_ids, run_history_filter):
-        self.__require_access()
+        self.__require_view()
 
         with DBSession(self._Session) as session:
             query = session.query(RunHistory.id)
@@ -1400,7 +1397,7 @@ class ThriftRequestHandler:
     @timeit
     def getDiffResultsHash(self, run_ids, report_hashes, diff_type,
                            skip_detection_statuses, tag_ids):
-        self.__require_access()
+        self.__require_view()
 
         if not skip_detection_statuses:
             skip_detection_statuses = [ttypes.DetectionStatus.RESOLVED,
@@ -1998,37 +1995,29 @@ class ThriftRequestHandler:
          - checkerId
         """
 
-        missing_doc = "No documentation found for checker: " + checkerId + \
-                      "\n\nPlease refer to the documentation at the "
+        return ""
 
-        if "." in checkerId:
-            sa_link = "http://clang-analyzer.llvm.org/available_checks.html"
-            missing_doc += "[ClangSA](" + sa_link + ")"
-        elif "-" in checkerId:
-            tidy_link = "http://clang.llvm.org/extra/clang-tidy/checks/" + \
-                checkerId + ".html"
-            missing_doc += "[ClangTidy](" + tidy_link + ")"
-        missing_doc += " homepage."
+    @exc_to_thrift_reqfail
+    @timeit
+    def getCheckerLabels(
+        self,
+        checkers: List[ttypes.Checker]
+    ) -> List[List[str]]:
+        """ Return the list of labels to each checker. """
+        labels = []
+        for checker in checkers:
+            # Analyzer default value in the database is 'unknown' which is not
+            # a valid analyzer name. So this code handles this use case.
+            analyzer_name = None
+            if checker.analyzerName != "unknown":
+                analyzer_name = checker.analyzerName
 
-        try:
-            md_file = self.__checker_doc_map.get(checkerId)
-            if md_file:
-                md_file = os.path.join(self.__checker_md_docs, md_file)
-                try:
-                    with open(md_file, 'r',
-                              encoding='utf-8',
-                              errors='ignore') as md_content:
-                        missing_doc = md_content.read()
-                except (IOError, OSError):
-                    LOG.warning("Failed to read checker documentation: %s",
-                                md_file)
+            labels.append(list(map(
+                lambda x: f'{x[0]}:{x[1]}',
+                self._context.checker_labels.labels_of_checker(
+                    checker.checkerId, analyzer_name))))
 
-            return missing_doc
-
-        except Exception as ex:
-            msg = str(ex)
-            raise codechecker_api_shared.ttypes.RequestFailed(
-                codechecker_api_shared.ttypes.ErrorCode.IOERROR, msg)
+        return labels
 
     @exc_to_thrift_reqfail
     @timeit
@@ -2834,6 +2823,24 @@ class ThriftRequestHandler:
             q = session.query(FileContent) \
                 .options(sqlalchemy.orm.load_only('content_hash')) \
                 .filter(FileContent.content_hash.in_(file_hashes))
+
+            return list(set(file_hashes) -
+                        set([fc.content_hash for fc in q]))
+
+    @exc_to_thrift_reqfail
+    @timeit
+    def getMissingContentHashesForBlameInfo(self, file_hashes):
+        self.__require_store()
+
+        if not file_hashes:
+            return []
+
+        with DBSession(self._Session) as session:
+
+            q = session.query(FileContent) \
+                .options(sqlalchemy.orm.load_only('content_hash')) \
+                .filter(FileContent.content_hash.in_(file_hashes)) \
+                .filter(FileContent.blame_info.isnot(None))
 
             return list(set(file_hashes) -
                         set([fc.content_hash for fc in q]))

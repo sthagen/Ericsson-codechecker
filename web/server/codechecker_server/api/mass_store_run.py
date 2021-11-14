@@ -19,26 +19,27 @@ from collections import defaultdict
 from datetime import datetime
 from hashlib import sha256
 from tempfile import TemporaryDirectory
-from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import codechecker_api_shared
 from codechecker_api.codeCheckerDBAccess_v6 import ttypes
 
-from codechecker_common import plist_parser, skiplist_handler, util
+from codechecker_common import skiplist_handler, util
 from codechecker_common.logger import get_logger
-from codechecker_common.source_code_comment_handler import \
-    SourceCodeCommentHandler, SpellException, contains_codechecker_comment
 
-from codechecker_report_hash.hash import get_report_path_hash
+from codechecker_report_converter import util
+from codechecker_report_converter.report import report_file, Report
+from codechecker_report_converter.report.hash import get_report_path_hash
+from codechecker_report_converter.source_code_comment_handler import \
+    SourceCodeCommentHandler, SpellException, contains_codechecker_comment
 
 from ..database import db_cleanup
 from ..database.config_db_model import Product
 from ..database.database import DBSession
 from ..database.run_db_model import AnalysisInfo, AnalyzerStatistic, \
     BugPathEvent, BugReportPoint, ExtendedReportData, File, FileContent, \
-    Report, Run, RunHistory, RunLock
-from ..metadata import checker_is_unavailable, get_analyzer_name, \
-    MetadataInfoParser
+    Report as DBReport, Run, RunHistory, RunLock
+from ..metadata import checker_is_unavailable, MetadataInfoParser
 
 from .report_server import ThriftRequestHandler
 from .thrift_enum_helper import report_extended_data_type_str
@@ -49,14 +50,6 @@ LOG = get_logger('server')
 
 # FIXME: when these types are introduced we need to use those.
 SourceLineComments = List[Any]
-ReportType = Any
-MainSection = Dict
-
-
-class PathEvents(NamedTuple):
-    paths: List[ttypes.BugPathPos]
-    events: List[ttypes.BugPathEvent]
-    extended_data: List[ttypes.ExtendedReportData]
 
 
 def unzip(b64zip: str, output_dir: str) -> int:
@@ -112,147 +105,10 @@ def parse_codechecker_review_comment(
     return src_comment_data
 
 
-def collect_paths_events(
-    report: ReportType,
-    file_ids: Dict[str, int],
-    files: Dict[str, str]
-) -> PathEvents:
-    """
-    This function creates the BugPathPos and BugPathEvent objects which belong
-    to a report.
-
-    report -- A report object from the parsed plist file.
-    file_ids -- A dictionary which maps the file paths to file IDs in the
-                database.
-    files -- A list containing the file paths from the parsed plist file. The
-             order of this list must be the same as in the plist file.
-
-    #TODO Multiple ranges could belong to an event or control node.
-    Only the first range from the list of ranges is stored into the
-    database. Further improvement can be to store and view all ranges
-    if there are more than one.
-    """
-    path_events = PathEvents([], [], [])
-
-    events = [i for i in report.bug_path if i.get('kind') == 'event']
-
-    # Create remaining data for bugs and send them to the server.  In plist
-    # file the source and target of the arrows are provided as starting and
-    # ending ranges of the arrow. The path A->B->C is given as A->B and
-    # B->C, thus range B is provided twice. So in the loop only target
-    # points of the arrows are stored, and an extra insertion is done for
-    # the source of the first arrow before the loop.
-    report_path = [i for i in report.bug_path if i.get('kind') == 'control']
-
-    if report_path:
-        start_range = report_path[0]['edges'][0]['start']
-        start1_line = start_range[0]['line']
-        start1_col = start_range[0]['col']
-        start2_line = start_range[1]['line']
-        start2_col = start_range[1]['col']
-        source_file_path = files[start_range[1]['file']]
-        path_events.paths.append(ttypes.BugPathPos(
-            start1_line,
-            start1_col,
-            start2_line,
-            start2_col,
-            file_ids[source_file_path]))
-
-    for path in report_path:
-        try:
-            end_range = path['edges'][0]['end']
-            end1_line = end_range[0]['line']
-            end1_col = end_range[0]['col']
-            end2_line = end_range[1]['line']
-            end2_col = end_range[1]['col']
-            source_file_path = files[end_range[1]['file']]
-            path_events.paths.append(ttypes.BugPathPos(
-                end1_line,
-                end1_col,
-                end2_line,
-                end2_col,
-                file_ids[source_file_path]))
-        except IndexError:
-            # Edges might be empty nothing can be stored.
-            continue
-
-    for event in events:
-        file_path = files[event['location']['file']]
-
-        start_loc = event['location']
-        end_loc = event['location']
-        # Range can provide more precise location information.
-        # Use that if available.
-        ranges = event.get("ranges")
-        if ranges:
-            start_loc = ranges[0][0]
-            end_loc = ranges[0][1]
-
-        path_events.events.append(ttypes.BugPathEvent(
-            start_loc['line'],
-            start_loc['col'],
-            end_loc['line'],
-            end_loc['col'],
-            event['message'],
-            file_ids[file_path]))
-
-    for macro in report.macro_expansions:
-        if not macro['expansion']:
-            continue
-
-        file_path = files[macro['location']['file']]
-
-        start_loc = macro['location']
-        end_loc = macro['location']
-        # Range can provide more precise location information.
-        # Use that if available.
-        ranges = macro.get("ranges")
-        if ranges:
-            start_loc = ranges[0][0]
-            end_loc = ranges[0][1]
-
-        path_events.extended_data.append(ttypes.ExtendedReportData(
-            ttypes.ExtendedReportDataType.MACRO,
-            start_loc['line'],
-            start_loc['col'],
-            end_loc['line'],
-            end_loc['col'],
-            macro['expansion'],
-            file_ids[file_path]))
-
-    for note in report.notes:
-        if not note['message']:
-            continue
-
-        file_path = files[note['location']['file']]
-
-        start_loc = note['location']
-        end_loc = note['location']
-        # Range can provide more precise location information.
-        # Use that if available.
-        ranges = note.get("ranges")
-        if ranges:
-            start_loc = ranges[0][0]
-            end_loc = ranges[0][1]
-
-        path_events.extended_data.append(ttypes.ExtendedReportData(
-            ttypes.ExtendedReportDataType.NOTE,
-            start_loc['line'],
-            start_loc['col'],
-            end_loc['line'],
-            end_loc['col'],
-            note['message'],
-            file_ids[file_path]))
-
-    return path_events
-
-
 def add_file_record(
     session: DBSession,
     file_path: str,
-    content_hash: str,
-    remote_url: Optional[str],
-    tracking_branch: Optional[str]
+    content_hash: str
 ) -> Optional[int]:
     """
     Add the necessary file record pointing to an already existing content.
@@ -265,6 +121,13 @@ def add_file_record(
     finish_checker_run() and since SQLite doesn't support parallel
     transactions, this API call will wait until the other transactions
     finish. In the meantime the run adding transaction times out.
+
+    This function doesn't insert blame info in the File objects because those
+    are added by __add_blame_info(). In previous CodeChecker versions git info
+    was not stored at all, so upgrading to a new CodeChecker results the
+    storage of git blame info even for files that are already stored. For this
+    reason we can't avoid an update on File and FileContent tables, but we can
+    avoid double reading of blame info json files.
     """
     file_record = session.query(File) \
         .filter(File.content_hash == content_hash,
@@ -275,8 +138,7 @@ def add_file_record(
         return file_record.id
 
     try:
-        file_record = File(
-            file_path, content_hash, remote_url, tracking_branch)
+        file_record = File(file_path, content_hash, None, None)
         session.add(file_record)
         session.commit()
     except sqlalchemy.exc.IntegrityError as ex:
@@ -506,7 +368,6 @@ class MassStoreRun:
     def __store_source_files(
         self,
         source_root: str,
-        blame_root: str,
         filename_to_hash: Dict[str, str]
     ) -> Dict[str, int]:
         """ Storing file contents from plist. """
@@ -520,12 +381,6 @@ class MassStoreRun:
             trimmed_file_path = util.trim_path_prefixes(
                 file_name, self.__trim_path_prefixes)
 
-            blame_file = os.path.realpath(os.path.join(
-                blame_root, file_name.strip("/")))
-
-            blame_info, remote_url, tracking_branch = get_blame_file_data(
-                blame_file)
-
             if not os.path.isfile(source_file_name):
                 # The file was not in the ZIP file, because we already
                 # have the content. Let's check if we already have a file
@@ -534,8 +389,7 @@ class MassStoreRun:
                 LOG.debug('%s not found or already stored.', trimmed_file_path)
                 with DBSession(self.__Session) as session:
                     fid = add_file_record(
-                        session, trimmed_file_path, file_hash, remote_url,
-                        tracking_branch)
+                        session, trimmed_file_path, file_hash)
 
                 if not fid:
                     LOG.error("File ID for %s is not found in the DB with "
@@ -546,21 +400,63 @@ class MassStoreRun:
                 continue
 
             with DBSession(self.__Session) as session:
-                self.__add_file_content(
-                    session, source_file_name, file_hash, blame_info)
+                self.__add_file_content(session, source_file_name, file_hash)
 
                 file_path_to_id[trimmed_file_path] = add_file_record(
-                    session, trimmed_file_path, file_hash, remote_url,
-                    tracking_branch)
+                    session, trimmed_file_path, file_hash)
 
         return file_path_to_id
+
+    def __add_blame_info(
+        self,
+        blame_root: str,
+        filename_to_hash: Dict[str, str]
+    ):
+        """
+        This function updates blame info in File and FileContent tables if
+        these were NULL. This function exists only because in earlier
+        CodeChecker versions blame info was not stored in these tables and
+        in a subsequent storage we can't update the tables for an unchanged
+        file since __store_source_files() updates only the ones that are in the
+        .zip file. This function stores blame info even if the corresponding
+        source file is not in the .zip file.
+        """
+        with DBSession(self.__Session) as session:
+            for subdir, _, files in os.walk(blame_root):
+                for f in files:
+                    blame_file = os.path.join(subdir, f)
+                    file_path = blame_file[len(blame_root.rstrip("/")):]
+                    blame_info, remote_url, tracking_branch = \
+                        get_blame_file_data(blame_file)
+
+                    compressed_blame_info = None
+                    if blame_info:
+                        compressed_blame_info = zlib.compress(
+                            json.dumps(blame_info).encode('utf-8'),
+                            zlib.Z_BEST_COMPRESSION)
+
+                    session \
+                        .query(FileContent) \
+                        .filter(FileContent.blame_info.is_(None)) \
+                        .filter(FileContent.content_hash ==
+                                filename_to_hash.get(file_path)) \
+                        .update({"blame_info": compressed_blame_info})
+
+                    session \
+                        .query(File) \
+                        .filter(File.remote_url.is_(None)) \
+                        .filter(File.filepath == file_path) \
+                        .update({
+                            "remote_url": remote_url,
+                            "tracking_branch": tracking_branch})
+
+            session.commit()
 
     def __add_file_content(
         self,
         session: DBSession,
         source_file_name: str,
-        content_hash: Optional[str],
-        blame_info: Optional[dict]
+        content_hash: Optional[str]
     ):
         """
         Add the necessary file contents. If content_hash in None then this
@@ -573,6 +469,14 @@ class MassStoreRun:
         finish_checker_run() and since SQLite doesn't support parallel
         transactions, this API call will wait until the other transactions
         finish. In the meantime the run adding transaction times out.
+
+        This function doesn't insert blame info in the FileContent objects
+        because those are added by __add_blame_info(). In previous CodeChecker
+        versions git info was not stored at all, so upgrading to a new
+        CodeChecker results the storage of git blame info even for files that
+        are already stored. For this reason we can't avoid an update on File
+        and FileContent tables, but we can avoid double reading of blame info
+        json files.
         """
         source_file_content = None
         if not content_hash:
@@ -590,14 +494,7 @@ class MassStoreRun:
                 compressed_content = zlib.compress(
                     source_file_content, zlib.Z_BEST_COMPRESSION)
 
-                compressed_blame_info = None
-                if blame_info:
-                    compressed_blame_info = zlib.compress(
-                        json.dumps(blame_info).encode('utf-8'),
-                        zlib.Z_BEST_COMPRESSION)
-
-                fc = FileContent(
-                    content_hash, compressed_content, compressed_blame_info)
+                fc = FileContent(content_hash, compressed_content, None)
 
                 session.add(fc)
                 session.commit()
@@ -799,72 +696,71 @@ class MassStoreRun:
         self,
         session: DBSession,
         run_id: int,
-        file_id: int,
-        main_section: MainSection,
-        path_events: PathEvents,
+        report: Report,
+        file_path_to_id: Dict[str, int],
         detection_status: str,
         detection_time: datetime,
         analysis_info: AnalysisInfo,
         analyzer_name: Optional[str] = None
     ) -> int:
         """ Add report to the database. """
-        def store_bug_events(report_id: int):
-            """ Add bug path events. """
-            for i, event in enumerate(path_events.events):
-                bpe = BugPathEvent(
-                    event.startLine, event.startCol, event.endLine,
-                    event.endCol, i, event.msg, event.fileId, report_id)
-                session.add(bpe)
-
-        def store_bug_path(report_id: int):
-            """ Add bug path points. """
-            for i, piece in enumerate(path_events.paths):
-                brp = BugReportPoint(
-                    piece.startLine, piece.startCol, piece.endLine,
-                    piece.endCol, i, piece.fileId, report_id)
-                session.add(brp)
-
-        def store_extended_bug_data(report_id: int):
-            """ Add extended bug data objects to the database session. """
-            for data in path_events.extended_data:
-                data_type = report_extended_data_type_str(data.type)
-                red = ExtendedReportData(
-                    data.startLine, data.startCol, data.endLine, data.endCol,
-                    data.message, data.fileId, report_id, data_type)
-                session.add(red)
-
         try:
-            checker_name = main_section['check_name']
+            checker_name = report.checker_name
             severity_name = \
                 self.__context.checker_labels.severity(checker_name)
             severity = ttypes.Severity._NAMES_TO_VALUES[severity_name]
-            report = Report(
-                run_id, main_section['issue_hash_content_of_line_in_context'],
-                file_id, main_section['description'],
-                checker_name or 'NOT FOUND',
-                main_section['category'], main_section['type'],
-                main_section['location']['line'],
-                main_section['location']['col'],
-                severity, detection_status, detection_time,
-                len(path_events.events), analyzer_name)
 
-            session.add(report)
+            db_report = DBReport(
+                run_id, report.report_hash, file_path_to_id[report.file.path],
+                report.message, checker_name or 'NOT FOUND',
+                report.category, report.type, report.line, report.column,
+                severity, detection_status, detection_time,
+                len(report.bug_path_events), analyzer_name)
+
+            session.add(db_report)
             session.flush()
 
-            LOG.debug("storing bug path")
-            store_bug_path(report.id)
+            LOG.debug("Storing bug path positions.")
+            for i, p in enumerate(report.bug_path_positions):
+                session.add(BugReportPoint(
+                    p.range.start_line, p.range.start_col,
+                    p.range.end_line, p.range.end_col,
+                    i, file_path_to_id[p.file.path], db_report.id))
 
-            LOG.debug("storing events")
-            store_bug_events(report.id)
+            LOG.debug("Storing bug path events.")
+            for i, event in enumerate(report.bug_path_events):
+                session.add(BugPathEvent(
+                    event.range.start_line, event.range.start_col,
+                    event.range.end_line, event.range.end_col,
+                    i, event.message, file_path_to_id[event.file.path],
+                    db_report.id))
 
-            LOG.debug("storing extended report data")
-            store_extended_bug_data(report.id)
+            LOG.debug("Storing notes.")
+            for note in report.notes:
+                data_type = report_extended_data_type_str(
+                    ttypes.ExtendedReportDataType.NOTE)
+
+                session.add(ExtendedReportData(
+                    note.range.start_line, note.range.start_col,
+                    note.range.end_line, note.range.end_col,
+                    note.message, file_path_to_id[note.file.path],
+                    db_report.id, data_type))
+
+            LOG.debug("Storing macro expansions.")
+            for macro in report.macro_expansions:
+                data_type = report_extended_data_type_str(
+                    ttypes.ExtendedReportDataType.MACRO)
+
+                session.add(ExtendedReportData(
+                    macro.range.start_line, macro.range.start_col,
+                    macro.range.end_line, macro.range.end_col,
+                    macro.message, file_path_to_id[macro.file.path],
+                    db_report.id, data_type))
 
             if analysis_info:
-                report.analysis_info.append(analysis_info)
+                db_report.analysis_info.append(analysis_info)
 
-            return report.id
-
+            return db_report.id
         except Exception as ex:
             raise codechecker_api_shared.ttypes.RequestFailed(
                 codechecker_api_shared.ttypes.ErrorCode.GENERAL,
@@ -884,48 +780,22 @@ class MassStoreRun:
         """
         Process and save reports from the given report file to the database.
         """
-        try:
-            files, reports = plist_parser.parse_plist_file(report_file_path)
-        except Exception as ex:
-            LOG.warning('Parsing the plist failed: %s', str(ex))
-            return False
+        reports = report_file.get_reports(report_file_path)
 
         if not reports:
             return True
 
-        trimmed_files = {}
-        file_ids = {}
-        missing_ids_for_files = []
-
-        for k, v in files.items():
-            trimmed_files[k] = \
-                util.trim_path_prefixes(v, self.__trim_path_prefixes)
-
-        for file_name in trimmed_files.values():
-            file_id = file_path_to_id.get(file_name, -1)
-            if file_id == -1:
-                missing_ids_for_files.append(file_name)
-                continue
-
-            file_ids[file_name] = file_id
-
-        if missing_ids_for_files:
-            LOG.warning("Failed to get file path id for '%s'!",
-                        ' '.join(missing_ids_for_files))
-            return False
-
-        def set_review_status(report: ReportType):
+        def set_review_status(report: Report):
             """
             Set review status for the given report if there is any source code
             comment.
             """
-            checker_name = report.main['check_name']
-            last_report_event = report.bug_path[-1]
+            checker_name = report.checker_name
+            last_report_event = report.bug_path_events[-1]
 
-            # The original file path is needed here not the trimmed
-            # because the source files are extracted as the original
-            # file path.
-            file_name = files[last_report_event['location']['file']]
+            # The original file path is needed here, not the trimmed, because
+            # the source files are extracted as the original file path.
+            file_name = report.file.original_path
 
             source_file_name = os.path.realpath(
                 os.path.join(source_root, file_name.strip("/")))
@@ -934,14 +804,14 @@ class MassStoreRun:
             if not os.path.isfile(source_file_name):
                 return
 
-            report_line = last_report_event['location']['line']
+            report_line = last_report_event.range.end_line
             source_file = os.path.basename(file_name)
 
             src_comment_data = parse_codechecker_review_comment(
                 source_file_name, report_line, checker_name)
 
             if len(src_comment_data) == 1:
-                status = src_comment_data[0]['status']
+                status = src_comment_data[0].status
                 rw_status = ttypes.ReviewStatus.FALSE_POSITIVE
                 if status == 'confirmed':
                     rw_status = ttypes.ReviewStatus.CONFIRMED
@@ -950,7 +820,7 @@ class MassStoreRun:
 
                 self.__report_server._setReviewStatus(
                     session, report.report_hash, rw_status,
-                    src_comment_data[0]['message'], run_history_time)
+                    src_comment_data[0].message, run_history_time)
             elif len(src_comment_data) > 1:
                 LOG.warning(
                     "Multiple source code comment can be found "
@@ -966,9 +836,9 @@ class MassStoreRun:
         analysis_info = self.__analysis_info.get(root_dir_path)
 
         for report in reports:
-            self.__all_report_checkers.add(report.check_name)
+            self.__all_report_checkers.add(report.checker_name)
 
-            if skip_handler.should_skip(report.file_path):
+            if skip_handler.should_skip(report.file.path):
                 continue
 
             report.trim_path_prefixes(self.__trim_path_prefixes)
@@ -980,29 +850,24 @@ class MassStoreRun:
 
             LOG.debug("Storing report to the database...")
 
-            bug_id = report.report_hash
-
             detection_status = 'new'
             detected_at = run_history_time
 
-            if bug_id in hash_map_reports:
-                old_report = hash_map_reports[bug_id][0]
+            if report.report_hash in hash_map_reports:
+                old_report = hash_map_reports[report.report_hash][0]
                 old_status = old_report.detection_status
                 detection_status = 'reopened' \
                     if old_status == 'resolved' else 'unresolved'
                 detected_at = old_report.detected_at
 
-            analyzer_name = get_analyzer_name(
-                report.check_name, mip.checker_to_analyzer, report.metadata)
-
-            path_events = collect_paths_events(report, file_ids, trimmed_files)
+            analyzer_name = mip.checker_to_analyzer.get(
+                report.checker_name, report.analyzer_name)
 
             report_id = self.__add_report(
-                session, run_id, file_ids[report.file_path], report.main,
-                path_events, detection_status, detected_at, analysis_info,
-                analyzer_name)
+                session, run_id, report, file_path_to_id,
+                detection_status, detected_at, analysis_info, analyzer_name)
 
-            self.__new_report_hashes.add(bug_id)
+            self.__new_report_hashes.add(report.report_hash)
             self.__already_added_report_hashes.add(report_path_hash)
 
             set_review_status(report)
@@ -1046,8 +911,8 @@ class MassStoreRun:
         self.__new_report_hashes = set()
         self.__all_report_checkers = set()
 
-        all_reports = session.query(Report) \
-            .filter(Report.run_id == run_id) \
+        all_reports = session.query(DBReport) \
+            .filter(DBReport.run_id == run_id) \
             .all()
 
         hash_map_reports = defaultdict(list)
@@ -1068,7 +933,7 @@ class MassStoreRun:
             disabled_checkers.update(mip.disabled_checkers)
 
             for f in report_file_paths:
-                if not f.endswith('.plist'):
+                if not report_file.is_supported(f):
                     continue
 
                 LOG.debug("Parsing input file '%s'", f)
@@ -1171,7 +1036,8 @@ class MassStoreRun:
 
                 LOG.info("[%s] Store source files...", self.__name)
                 file_path_to_id = self.__store_source_files(
-                    source_root, blame_root, filename_to_hash)
+                    source_root, filename_to_hash)
+                self.__add_blame_info(blame_root, filename_to_hash)
                 LOG.info("[%s] Store source files done.", self.__name)
 
                 run_history_time = datetime.now()

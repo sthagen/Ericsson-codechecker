@@ -18,13 +18,15 @@ import sys
 from collections import defaultdict
 from typing import Dict, Iterable, Tuple
 
+from codechecker_report_converter import twodim
+
 from codechecker_analyzer import analyzer_context
 from codechecker_analyzer.analyzers import analyzer_types
 from codechecker_analyzer.analyzers.clangsa.analyzer import ClangSA
 from codechecker_analyzer.analyzers.clangtidy.analyzer import ClangTidy
 
 from codechecker_common import arg, logger
-from codechecker_common.output import USER_FORMATS, twodim
+from codechecker_common.output import USER_FORMATS
 from codechecker_common.checker_labels import CheckerLabels
 from codechecker_analyzer import env
 from codechecker_analyzer.analyzers.config_handler import CheckerState
@@ -290,7 +292,10 @@ def __guideline_to_label(
     "--label guideline:sei-cert" and "--guideline sei-cert:str38-c" is the same
     as "--label sei-cert:str38-c".
     """
-    guidelines = cl.occurring_values('guideline', args.analyzers)
+    guidelines = []
+    for analyzer in args.analyzers:
+        guidelines.extend(cl.occurring_values('guideline', analyzer))
+
     if args.guideline in guidelines:
         return f'guideline:{args.guideline}'
     else:
@@ -580,7 +585,7 @@ def __print_checkers(args: argparse.Namespace, cl: CheckerLabels):
     result = []
     for analyzer in args.analyzers:
         if labels:
-            checkers = cl.checkers_by_labels(labels, [analyzer])
+            checkers = cl.checkers_by_labels(labels, analyzer)
             result.extend(
                 filter(lambda x: x[1] in checkers, checker_info[analyzer]))
         else:
