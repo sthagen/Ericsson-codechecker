@@ -1,6 +1,6 @@
 name: codechecker
 base: core18
-version: '6.18.0'
+version: '6.19.0'
 summary: CodeChecker is an analyzer tooling, defect database and viewer extension
 description: |
   CodeChecker is an analyzer tooling, defect database and viewer extension.
@@ -33,7 +33,7 @@ parts:
   codechecker:
     plugin: python
     python-version: python3
-    source: https://github.com/Ericsson/codechecker/archive/v6.18.0.tar.gz
+    source: https://github.com/Ericsson/codechecker/archive/v6.19.0.tar.gz
     build-packages:
       - curl
       - gcc-multilib
@@ -42,6 +42,12 @@ parts:
       - python  # Needed to compile fibers npm package.
     build-snaps:
       - node/11/stable
+    override-pull: |
+      snapcraftctl pull
+
+      # We need to remove the setup.py file from the root folder of the
+      # repository, otherwise the build process will fail.
+      rm -rf $SNAPCRAFT_PART_SRC/setup.py
     override-build: |
       snapcraftctl build
 

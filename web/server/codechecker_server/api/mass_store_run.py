@@ -48,6 +48,20 @@ from .thrift_enum_helper import report_extended_data_type_str
 LOG = get_logger('server')
 
 
+class LogTask:
+    def __init__(self, run_name: str, message: str):
+        self.__run_name = run_name
+        self.__msg = message
+        self.__start_time = time.time()
+
+    def __enter__(self, *args):
+        LOG.info("[%s] %s...", self.__run_name, self.__msg)
+
+    def __exit__(self, *args):
+        LOG.info("[%s] %s done... (duration: %s sec)", self.__run_name,
+                 self.__msg, round(time.time() - self.__start_time, 2))
+
+
 # FIXME: when these types are introduced we need to use those.
 SourceLineComments = List[Any]
 
@@ -831,17 +845,35 @@ class MassStoreRun:
                 self.__wrong_src_code_comments.append(
                     f"{source_file}|{report_line}|{checker_name}")
 
+        def get_missing_file_ids(report: Report) -> List[str]:
+            """ Returns file paths which database file id is missing. """
+            missing_ids_for_files = []
+            for file_path in report.trimmed_files:
+                file_id = file_path_to_id.get(file_path, -1)
+                if file_id == -1:
+                    missing_ids_for_files.append(file_path)
+
+            return missing_ids_for_files
+
         root_dir_path = os.path.dirname(report_file_path)
         mip = self.__mips[root_dir_path]
         analysis_info = self.__analysis_info.get(root_dir_path)
 
         for report in reports:
-            self.__all_report_checkers.add(report.checker_name)
+            report.trim_path_prefixes(self.__trim_path_prefixes)
 
-            if skip_handler.should_skip(report.file.path):
+            missing_ids_for_files = get_missing_file_ids(report)
+            if missing_ids_for_files:
+                LOG.warning("Failed to get database id for file path '%s'! "
+                            "Skip adding report: %s:%d:%d [%s]",
+                            ' '.join(missing_ids_for_files), report.file.path,
+                            report.line, report.column, report.checker_name)
                 continue
 
-            report.trim_path_prefixes(self.__trim_path_prefixes)
+            self.__all_report_checkers.add(report.checker_name)
+
+            if skip_handler.should_skip(report.file.original_path):
+                continue
 
             report_path_hash = get_report_path_hash(report)
             if report_path_hash in self.__already_added_report_hashes:
@@ -922,7 +954,8 @@ class MassStoreRun:
         enabled_checkers: Set[str] = set()
         disabled_checkers: Set[str] = set()
 
-        # Processing PList files.
+        # Processing analyzer result files.
+        processed_result_file_count = 0
         for root_dir_path, _, report_file_paths in os.walk(report_dir):
             LOG.debug("Get reports from '%s' directory", root_dir_path)
 
@@ -943,6 +976,10 @@ class MassStoreRun:
                     report_file_path, session, source_root, run_id,
                     file_path_to_id, run_history_time,
                     skip_handler, hash_map_reports)
+                processed_result_file_count += 1
+
+        LOG.info("[%s] Processed %d analyzer result file(s).", self.__name,
+                 processed_result_file_count)
 
         # If a checker was found in a plist file it can not be disabled so we
         # will add this to the enabled checkers list and remove this checker
@@ -1013,9 +1050,9 @@ class MassStoreRun:
             with TemporaryDirectory(
                 dir=self.__context.codechecker_workspace
             ) as zip_dir:
-                LOG.info("[%s] Unzip storage file...", self.__name)
-                zip_size = unzip(self.__b64zip, zip_dir)
-                LOG.info("[%s] Unzip storage file done.", self.__name)
+                with LogTask(run_name=self.__name,
+                             message="Unzip storage file"):
+                    zip_size = unzip(self.__b64zip, zip_dir)
 
                 if zip_size == 0:
                     raise codechecker_api_shared.ttypes.RequestFailed(
@@ -1034,11 +1071,13 @@ class MassStoreRun:
                 filename_to_hash = \
                     util.load_json_or_empty(content_hash_file, {})
 
-                LOG.info("[%s] Store source files...", self.__name)
-                file_path_to_id = self.__store_source_files(
-                    source_root, filename_to_hash)
-                self.__add_blame_info(blame_root, filename_to_hash)
-                LOG.info("[%s] Store source files done.", self.__name)
+                with LogTask(run_name=self.__name,
+                             message="Store source files"):
+                    LOG.info("[%s] Storing %d source file(s).", self.__name,
+                             len(filename_to_hash.keys()))
+                    file_path_to_id = self.__store_source_files(
+                        source_root, filename_to_hash)
+                    self.__add_blame_info(blame_root, filename_to_hash)
 
                 run_history_time = datetime.now()
 
@@ -1091,11 +1130,11 @@ class MassStoreRun:
                             run_id, update_run = self.__add_or_update_run(
                                 session, run_history_time)
 
-                            LOG.info("[%s] Store reports...", self.__name)
-                            self.__store_reports(
-                                session, report_dir, source_root, run_id,
-                                file_path_to_id, run_history_time)
-                            LOG.info("[%s] Store reports done.", self.__name)
+                            with LogTask(run_name=self.__name,
+                                         message="Store reports"):
+                                self.__store_reports(
+                                    session, report_dir, source_root, run_id,
+                                    file_path_to_id, run_history_time)
 
                             self.finish_checker_run(session, run_id)
 
