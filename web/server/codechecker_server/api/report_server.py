@@ -10,10 +10,12 @@ Handle Thrift requests.
 """
 
 import base64
+import html
 import json
 import os
 import re
 import shlex
+import stat
 import time
 import zlib
 
@@ -790,10 +792,10 @@ def get_comment_msg(comment):
         if system_comment:
             for idx, value in enumerate(elements[1:]):
                 system_comment = system_comment.replace(
-                    '{' + str(idx) + '}', value)
-            message = system_comment
+                    '{' + str(idx) + '}', html.escape(value))
+            return system_comment
 
-    return message
+    return html.escape(message)
 
 
 def create_review_data(review_status):
@@ -1273,7 +1275,8 @@ class ThriftRequestHandler:
         analysis_info = self.getAnalysisInfo(
             analysis_info_filter, limit, offset)
 
-        return "; ".join([i.analyzerCommand for i in analysis_info])
+        return "; ".join([html.escape(i.analyzerCommand)
+                          for i in analysis_info])
 
     @exc_to_thrift_reqfail
     @timeit
@@ -1326,7 +1329,7 @@ class ThriftRequestHandler:
                         zlib.decompress(cmd.analyzer_command).decode('utf-8')
 
                     res.append(ttypes.AnalysisInfo(
-                        analyzerCommand=command))
+                        analyzerCommand=html.escape(command)))
 
         return res
 
@@ -1909,7 +1912,7 @@ class ThriftRequestHandler:
         """ Add new comment for the given bug. """
         self.__require_access()
 
-        if not comment_data.message.strip():
+        if not comment_data.message or not comment_data.message.strip():
             raise codechecker_api_shared.ttypes.RequestFailed(
                 codechecker_api_shared.ttypes.ErrorCode.GENERAL,
                 'The comment message can not be empty!')
@@ -2119,7 +2122,7 @@ class ThriftRequestHandler:
                             name=commit["author"]["name"],
                             email=commit["author"]["email"]),
                         summary=commit["summary"],
-                        message=commit["message"],
+                        message=html.escape(commit["message"]),
                         committedDateTime=commit["committed_datetime"],
                     )
                     for commitHash, commit in blame_info["commits"].items()
@@ -2924,7 +2927,7 @@ class ThriftRequestHandler:
                                            self._product.endpoint)
                 # Create report store directory.
                 if not os.path.exists(product_dir):
-                    os.makedirs(product_dir)
+                    os.makedirs(product_dir, mode=stat.S_IRWXU | stat.S_IRGRP)
 
                 # Removes and replaces special characters in the run name.
                 run_name = slugify(run_name)
@@ -2932,6 +2935,12 @@ class ThriftRequestHandler:
                 with open(run_zip_file, 'wb') as run_zip:
                     run_zip.write(zlib.decompress(
                         base64.b64decode(b64zip.encode('utf-8'))))
+
+                # Change permission, so only current user and group have access
+                # to this file.
+                os.chmod(
+                    run_zip_file, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
+
                 return True
             except Exception as ex:
                 LOG.error(str(ex))
@@ -2989,7 +2998,7 @@ class ThriftRequestHandler:
                 comment_data = ttypes.CommentData(
                     id=data.id,
                     author=data.author,
-                    message=data.message.decode('utf-8'),
+                    message=html.unescape(data.message.decode('utf-8')),
                     createdAt=str(data.created_at),
                     kind=data.kind)
                 comment_data_list[report_id].append(comment_data)
