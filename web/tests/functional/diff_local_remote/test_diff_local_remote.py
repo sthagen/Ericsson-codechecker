@@ -244,6 +244,15 @@ class LocalRemote(unittest.TestCase):
 
             self.assertIn(file_name, checked_files)
 
+        # Check reports in the index.html file.
+        index_html = os.path.join(html_reports, 'index.html')
+        divide_zero_count = 0
+        with open(index_html, 'r', encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if re.search("core.DivideZero", line):
+                    divide_zero_count += 1
+        self.assertEqual(divide_zero_count, 10)
+
     def test_different_basename_types(self):
         """ Test different basename types.
 
@@ -664,3 +673,13 @@ class LocalRemote(unittest.TestCase):
         self.assertSetEqual(
             {r['report_hash'] for r in resolved_results}, resolved_hashes)
         self.assertEqual(returncode, 2)
+
+    def test_print_bug_steps(self):
+        """ Test printing the steps the analyzers took. """
+        out, _, ret = get_diff_results(
+            [self._run_names[0]], [self._local_reports], '--resolved', None,
+            ["--url", self._url, "--print-steps"])
+
+        self.assertTrue("Steps:" in out)
+        self.assertTrue("Report hash:" in out)
+        self.assertEqual(ret, 2)

@@ -40,6 +40,8 @@ Table of Contents
         * [`login` (Authenticate to the server)](#cmd-login)
         * [`export` (Export comments and review statuses from CodeChecker)](#cmd-export)
         * [`import` (Import comments and review statuses into CodeChecker)](#cmd-import)
+    * [`version`](#version)
+      * [JSON format](#json-format)
 * [Debugging CodeChecker](#debug)
 
 # CodeChecker <a name="codechecker"></a>
@@ -206,19 +208,14 @@ optional arguments:
                         removing "/a/b/" prefix will store files like c/x.cpp
                         and c/y.cpp. If multiple prefix is given, the longest
                         match will be removed.
-  --config CONFIG_FILE  Allow the configuration from an explicit JSON based
-                        configuration file. The values configured in the
-                        config file will overwrite the values set in the
-                        command line. The format of configuration file is:
-                        {
-                          "store": [
-                            "--name=run_name",
-                            "--tag=my_tag",
-                            "--url=http://codechecker.my:9090/MyProduct"
-                          ]
-                        }. (default: None)
+  --config CONFIG_FILE  Allow the configuration from an explicit configuration
+                        file. The values configured in the config file will
+                        overwrite the values set in the command line.
                         You can use any environment variable inside this file
-                        and it will be expaneded. (default: None)
+                        and it will be expaneded.
+                        For more information see the docs: https://github.com/
+                        Ericsson/codechecker/tree/master/docs/config_file.md
+                        (default: None)
   -f, --force           Delete analysis results stored in the database for the
                         current analysis run's name and store only the results
                         reported in the 'input' files. (By default,
@@ -342,16 +339,14 @@ optional arguments:
                         "::"'.) (default: False)
   --skip-db-cleanup     Skip performing cleanup jobs on the database like
                         removing unused files. (default: False)
-  --config CONFIG_FILE  Allow the configuration from an explicit JSON based
-                        configuration file. The values configured in the
-                        config file will overwrite the values set in the
-                        command line. The format of configuration file is:
-                        {
-                          "server": [
-                            "--workspace=/home/<username>/workspace",
-                            "--port=9090"
-                          ]
-                        }. (default: None)
+  --config CONFIG_FILE  Allow the configuration from an explicit configuration
+                        file. The values configured in the config file will
+                        overwrite the values set in the command line.
+                        You can use any environment variable inside this file
+                        and it will be expaneded.
+                        For more information see the docs: https://github.com/
+                        Ericsson/codechecker/tree/master/docs/config_file.md
+                        (default: None)
   --verbose {info,debug,debug_analyzer}
                         Set verbosity level.
 
@@ -1060,7 +1055,7 @@ from the comparison of two runs.
 
 ```
 usage: CodeChecker cmd diff [-h] [-b BASE_RUNS [BASE_RUNS ...]]
-                            [-n NEW_RUNS [NEW_RUNS ...]]
+                            [-n NEW_RUNS [NEW_RUNS ...]] [--print-steps]
                             [--uniqueing {on,off}]
                             [--report-hash [REPORT_HASH [REPORT_HASH ...]]]
                             [--review-status [REVIEW_STATUS [REVIEW_STATUS ...]]]
@@ -1118,6 +1113,8 @@ optional arguments:
                         tag labels can also be used separated by a colon (:)
                         character: "run_name:tag_name". A run name containing
                         a literal colon (:) must be escaped: "run\:name".
+  --print-steps         Print the steps the analyzers took in finding the
+                        reported defect.
   -o {plaintext,rows,table,csv,json,html,gerrit,codeclimate} [{plaintext,rows,table,csv,json,html,gerrit,codeclimate} ...], --output {plaintext,rows,table,csv,json,html,gerrit,codeclimate} [{plaintext,rows,table,csv,json,html,gerrit,codeclimate} ...]
                         The output format(s) to use in showing the data.
                         - html: multiple html files will be generated in the
@@ -1679,6 +1676,7 @@ common arguments:
   --verbose {info,debug_analyzer,debug}
                         Set verbosity level.
 ```
+</details>
 
 ### Authenticate to the server (`login`) <a name="cmd-login"></a>
 <details>
@@ -1767,6 +1765,47 @@ optional arguments:
   -i JSON_FILE, --import JSON_FILE
                         Import findings from the json file into the database.
 ```
+
+## `version`
+### JSON format
+The JSON output format looks like this:
+```json
+{
+  "analyzer": {
+    "base_package_version": "6.19.0",
+    "package_build_date": "2021-12-15T16:07",
+    "git_commit": "ed16b5d58f75002b465ea0944be0abf071f0b958",
+    "git_tag": "6.19"
+  },
+  "web": {
+    "base_package_version": "6.19.0",
+    "package_build_date": "2021-12-15T16:07",
+    "git_commit": "ed16b5d58f75002b465ea0944be0abf071f0b958",
+    "git_tag": "6.19",
+    "server_api_version": [
+      "6.47"
+    ],
+    "client_api_version": "6.47"
+  }
+}
+```
+
+In JSON output we have two main sections:
+- `analyzer` (null | object): Analyzer version information if it's available.
+  - `base_package_version` (string): Base package version in
+  `<major>.<minor>.<revision>` format.
+  - `package_build_date` (string): Date time when the package was built.
+  - `git_commit` (null | string): Git commit ID (hash).
+  - `git_tag` (null | string): Git tag information.
+- `web` (null | object): Web version information if it's available.
+  - `base_package_version` (string): Base package version in
+  `<major>.<minor>.<revision>` format.
+  - `package_build_date` (string): Date time when the package was built.
+  - `git_commit` (null | string): Git commit ID (hash).
+  - `git_tag` (null | string): Git tag information.
+  - `server_api_version` (list[string]): Server supported Thrift API version.
+  - `client_api_version` (str): Client Thrift API version.
+
 
 # Debugging CodeChecker <a name="debug"></a>
 
