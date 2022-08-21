@@ -36,7 +36,7 @@ macOS (OS X) development environment.
 
 # Main features
 ## Command line C/C++ Analysis
-  * Executes [_Clang-Tidy_](http://clang.llvm.org/extra/clang-tidy/) and [_Clang Static Analyzer_](http://clang-analyzer.llvm.org/) with Cross-Translation Unit analysis, Statistical Analysis (when checkers are available).
+  * Executes [_Clang-Tidy_](http://clang.llvm.org/extra/clang-tidy/), [_Clang Static Analyzer_](http://clang-analyzer.llvm.org/) with Cross-Translation Unit analysis, Statistical Analysis (when checkers are available), and [_Cppcheck_](https://cppcheck.sourceforge.io/).
   * Creates the JSON compilation database by wiretapping any build process (e.g., `CodeChecker log -b "make"`).
   * Automatically analyzes GCC cross-compiled projects: detecting GCC or Clang compiler configuration and forming the corresponding clang analyzer invocations.
   * Incremental analysis: Only the changed files and its dependencies need to be reanalyzed.
@@ -195,10 +195,10 @@ For details see
 Useful tools that can also be used outside CodeChecker.
 
 * [Build Logger (to generate JSON Compilation Database from your builds)](/analyzer/tools/build-logger/README.md)
-* [Plist to HTML converter (to generate HTML files from the given plist files)](/docs/tools/plist_to_html.md)
+* [Plist to HTML converter (to generate HTML files from the given plist files)](/docs/tools/report-converter.md#plist-to-html-tool)
 * [Report Converter Tool (to convert analysis results from other analyzers to the codechecker report directory format))](/docs/tools/report-converter.md)
 * [Translation Unit Collector (to collect source files of a translation unit or to get source files which depend on the given header files)](/docs/tools/tu_collector.md)
-* [Report Hash generator (to generate unique hash identifiers for reports)](/docs/tools/codechecker_report_hash.md)
+* [Report Hash generator (to generate unique hash identifiers for reports)](/docs/tools/report-converter.md#report-hash-generation-module)
 
 ## Helper Scripts
 * [Helper Scripts for daily analysis](script_daily.md)
@@ -239,7 +239,8 @@ The following commands are used to bootstrap CodeChecker on Ubuntu 20.04 LTS:
 # Install mandatory dependencies for a development and analysis environment.
 # NOTE: clang or clang-tidy can be any sufficiently fresh version, and need not
 #       come from package manager!
-sudo apt-get install clang clang-tidy build-essential curl gcc-multilib \
+#       In case of Cppcheck, the minimal supported version is 1.80.
+sudo apt-get install clang clang-tidy cppcheck build-essential curl gcc-multilib \
       git python3-dev python3-venv
 
 # Install nodejs dependency for web. In case of Debian/Ubuntu you can use the
