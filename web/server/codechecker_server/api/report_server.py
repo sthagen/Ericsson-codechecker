@@ -371,6 +371,8 @@ def filter_open_reports_in_tags(results, run_ids, tag_ids):
     """
     Adding filters on "results" query which filter on open reports in
     given runs and tags.
+    For further information see the documentation of
+    filter_open_reports_in_tags_old().
     """
 
     if run_ids:
@@ -381,6 +383,36 @@ def filter_open_reports_in_tags(results, run_ids, tag_ids):
             RunHistory, RunHistory.run_id == Report.run_id) \
             .filter(RunHistory.id.in_(tag_ids)) \
             .filter(get_open_reports_date_filter_query())
+
+    return results
+
+
+def filter_open_reports_in_tags_old(results, run_ids, tag_ids):
+    """
+    Adding filters on "results" query which filter on open reports in
+    given runs and tags.
+
+    This function is almost the same as filter_open_reports_in_tags() except
+    that is uses get_open_reports_date_filter_query_old() for filtering open
+    reports on a given date. This function is duplicated, because we didn't
+    want to add an extra parameter for this function, but express the fact that
+    an old client (i.e. API version before 6.50) should be given a different
+    result set.
+    This function and its duplicate are used in getDiffResultHash() which
+    should behave differently when called by an old client. The reasons of this
+    different behavior is described a previous commit
+    (f6d0fedaf14b583df7bd26078a8a22b557be57c6) where another case of the issue
+    was fixed.
+    """
+
+    if run_ids:
+        results = results.filter(Report.run_id.in_(run_ids))
+
+    if tag_ids:
+        results = results.outerjoin(
+            RunHistory, RunHistory.run_id == Report.run_id) \
+            .filter(RunHistory.id.in_(tag_ids)) \
+            .filter(get_open_reports_date_filter_query_old())
 
     return results
 
@@ -516,6 +548,16 @@ def get_open_reports_date_filter_query(tbl=Report, date=RunHistory.time):
     return and_(tbl.detected_at <= date,
                 or_(tbl.fixed_at.is_(None),
                     tbl.fixed_at > date))
+
+
+def get_open_reports_date_filter_query_old(tbl=Report, date=RunHistory.time):
+    """ Get open reports date filter.
+
+    This function is a dupliation of get_open_reports_date_filter_query().
+    For the reson of duplication see the documentation of
+    filter_open_reports_in_tags_old().
+    """
+    return tbl.detected_at <= date
 
 
 def get_diff_bug_id_query(session, run_ids, tag_ids, open_reports_date):
@@ -1205,6 +1247,7 @@ class ThriftRequestHandler:
                  auth_session,
                  config_database,
                  package_version,
+                 client_version,
                  context):
 
         if not product:
@@ -1216,6 +1259,7 @@ class ThriftRequestHandler:
         self._auth_session = auth_session
         self._config_database = config_database
         self.__package_version = package_version
+        self.__client_version = client_version
         self._Session = Session
         self._context = context
         self.__permission_args = {
@@ -1580,6 +1624,18 @@ class ThriftRequestHandler:
                            skip_detection_statuses, tag_ids):
         self.__require_view()
 
+        # FIXME: This getDiffResultsHash() function is returning a set of
+        # reports based on what are they compared to in a "CodeChecker cmd
+        # diff" command. Earlier this function didn't consider false positive
+        # and intentional reports as closed reports. The client's behavior also
+        # changed from CodeChecker 6.20.0 and this behavior is adapted to the
+        # new server behavior. The problem is that the old client works
+        # correcly only with the old server. For this reason we are branching
+        # based on the client's version. We are having access to the Thrift
+        # API version here. The behavior change happend in Thrift API version
+        # 6.50.
+        client_version = tuple(map(int, self.__client_version.split('.')))
+
         if not skip_detection_statuses:
             skip_detection_statuses = [ttypes.DetectionStatus.RESOLVED,
                                        ttypes.DetectionStatus.OFF,
@@ -1599,13 +1655,19 @@ class ThriftRequestHandler:
                     return []
 
                 base_hashes = session.query(Report.bug_id.label('bug_id')) \
-                    .outerjoin(File, Report.file_id == File.id) \
-                    .filter(
+                    .outerjoin(File, Report.file_id == File.id)
+
+                if client_version >= (6, 50):
+                    base_hashes = base_hashes.filter(
                         Report.detection_status.notin_(skip_statuses_str),
                         Report.fixed_at.is_(None))
-
-                base_hashes = \
-                    filter_open_reports_in_tags(base_hashes, run_ids, tag_ids)
+                    base_hashes = filter_open_reports_in_tags(
+                        base_hashes, run_ids, tag_ids)
+                else:
+                    base_hashes = base_hashes.filter(
+                        Report.detection_status.notin_(skip_statuses_str))
+                    base_hashes = filter_open_reports_in_tags_old(
+                        base_hashes, run_ids, tag_ids)
 
                 if self._product.driver_name == 'postgresql':
                     new_hashes = select([func.unnest(report_hashes)
@@ -1630,24 +1692,38 @@ class ThriftRequestHandler:
 
                     return new_hashes
             elif diff_type == DiffType.RESOLVED:
-                results = session.query(Report.bug_id) \
-                    .filter(or_(Report.bug_id.notin_(report_hashes),
-                                Report.fixed_at.isnot(None)))
+                results = session.query(Report.bug_id)
 
-                results = \
-                    filter_open_reports_in_tags(results, run_ids, tag_ids)
+                if client_version >= (6, 50):
+                    results = results.filter(or_(
+                        Report.bug_id.notin_(report_hashes),
+                        Report.fixed_at.isnot(None)))
+                    results = filter_open_reports_in_tags(
+                        results, run_ids, tag_ids)
+                else:
+                    results = results.filter(
+                        Report.bug_id.notin_(report_hashes))
+                    results = filter_open_reports_in_tags_old(
+                        results, run_ids, tag_ids)
 
                 return [res[0] for res in results]
 
             elif diff_type == DiffType.UNRESOLVED:
                 results = session.query(Report.bug_id) \
-                    .filter(Report.bug_id.in_(report_hashes)) \
-                    .filter(Report.detection_status.notin_(
-                        skip_statuses_str)) \
-                    .filter(Report.fixed_at.is_(None))
+                    .filter(Report.bug_id.in_(report_hashes))
 
-                results = \
-                    filter_open_reports_in_tags(results, run_ids, tag_ids)
+                if client_version >= (6, 50):
+                    results = results \
+                        .filter(Report.detection_status.notin_(
+                            skip_statuses_str)) \
+                        .filter(Report.fixed_at.is_(None))
+                    results = filter_open_reports_in_tags(
+                        results, run_ids, tag_ids)
+                else:
+                    results = results.filter(
+                        Report.detection_status.notin_(skip_statuses_str))
+                    results = filter_open_reports_in_tags_old(
+                        results, run_ids, tag_ids)
 
                 return [res[0] for res in results]
 
