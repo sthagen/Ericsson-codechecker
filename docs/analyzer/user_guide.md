@@ -304,17 +304,18 @@ analyzer arguments:
                         analysis of a particular file takes longer than this
                         time, the analyzer is killed and the analysis is
                         considered as a failed one.
-  --z3 {on,off}         Enable the z3 solver backend. This allows reasoning
-                        over more complex queries, but performance is worse
-                        than the default range-based constraint solver.
-                        (default: off)
+  --z3 {on,off}         Enable Z3 as the solver backend. This allows reasoning
+                        over more complex queries, but performance is much worse
+                        than the default range-based constraint solver system.
+                        WARNING: Z3 as the only backend is a highly
+                        experimental and likely unstable feature. (default: off)
   --z3-refutation {on,off}
                         Switch on/off the Z3 SMT Solver backend to reduce
                         false positives. The results of the ranged based
                         constraint solver in the Clang Static Analyzer will be
                         cross checked with the Z3 SMT solver. This should not
-                        cause that much of a slowdown compared to using the Z3
-                        solver only. (default: on)
+                        cause that much of a slowdown compared to using only the
+                        Z3 solver. (default: on)
 
 cross translation unit analysis arguments:
 
@@ -1035,6 +1036,9 @@ checked, `+` means that it should be.
  * Path parts should start and end with `*`.
  * To skip everything use the `-*` mark. **Watch out for the order!**
 
+Comments can also be used in skipfiles: a line starting with `#` will not be
+taken into account.
+
 ##### Absolute path examples
 
 ```
@@ -1130,17 +1134,18 @@ analyzer arguments:
                         analysis of a particular file takes longer than this
                         time, the analyzer is killed and the analysis is
                         considered as a failed one.
-  --z3 {on,off}         Enable the z3 solver backend. This allows reasoning
-                        over more complex queries, but performance is worse
-                        than the default range-based constraint solver.
-                        (default: off)
+  --z3 {on,off}         Enable Z3 as the solver backend. This allows reasoning
+                        over more complex queries, but performance is much worse
+                        than the default range-based constraint solver system.
+                        WARNING: Z3 as the only backend is a highly
+                        experimental and likely unstable feature. (default: off)
   --z3-refutation {on,off}
                         Switch on/off the Z3 SMT Solver backend to reduce
                         false positives. The results of the ranged based
                         constraint solver in the Clang Static Analyzer will be
                         cross checked with the Z3 SMT solver. This should not
-                        cause that much of a slowdown compared to using the Z3
-                        solver only. (default: on)
+                        cause that much of a slowdown compared to using only the
+                        Z3 solver. (default: on)
 ```
 
 CodeChecker supports several analyzer tools. Currently, these analyzers are
