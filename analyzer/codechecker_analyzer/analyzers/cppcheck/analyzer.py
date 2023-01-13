@@ -12,7 +12,6 @@ from distutils.version import StrictVersion
 from pathlib import Path
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -96,13 +95,15 @@ class Cppcheck(analyzer_base.SourceAnalyzer):
         Any other parameter different from the above list will be dropped.
         """
         params = []
-        interesting_option = re.compile("-[I|U|D].*")
+        interesting_option = re.compile("-[IUD].*")
         # the std flag is different. the following are all valid flags:
         # * --std c99
         # * -std=c99
         # * --std=c99
-        # BUT NOT: -std c99
-        std_regex = re.compile("-?-std.*")
+        # BUT NOT:
+        # * -std c99
+        # * -stdlib=libc++
+        std_regex = re.compile("-(-std$|-?std=.*)")
         for i, analyzer_option in enumerate(self.buildaction.analyzer_options):
             if interesting_option.match(analyzer_option):
                 params.extend([analyzer_option])
@@ -301,7 +302,6 @@ class Cppcheck(analyzer_base.SourceAnalyzer):
         command = [analyzer_binary, "--version"]
 
         try:
-            command = shlex.split(' '.join(command))
             result = subprocess.check_output(
                     command,
                     env=env,
