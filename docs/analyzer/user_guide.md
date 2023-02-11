@@ -137,7 +137,6 @@ usage: CodeChecker check [-h] [-o OUTPUT_DIR] [-t {plist}] [-q]
                          [--config CONFIG_FILE]
                          [--saargs CLANGSA_ARGS_CFG_FILE]
                          [--tidyargs TIDY_ARGS_CFG_FILE]
-                         [--tidy-config TIDY_CONFIG]
                          [--analyzer-config [ANALYZER_CONFIG [ANALYZER_CONFIG ...]]]
                          [--checker-config [CHECKER_CONFIG [CHECKER_CONFIG ...]]]
                          [--timeout TIMEOUT]
@@ -277,11 +276,6 @@ analyzer arguments:
   --tidyargs TIDY_ARGS_CFG_FILE
                         File containing argument which will be forwarded
                         verbatim for the Clang-Tidy analyzer.
-  --tidy-config TIDY_CONFIG
-                        A file in YAML format containing the configuration of
-                        clang-tidy checkers. The file can be dumped by
-                        'CodeChecker analyzers --dump-config clang-tidy'
-                        command.
   --analyzer-config [ANALYZER_CONFIG [ANALYZER_CONFIG ...]]
                         Analyzer configuration options in the following
                         format: analyzer:key=value. The collection of the
@@ -865,15 +859,23 @@ for printing an overview in the terminal (`CodeChecker parse`) or storing
 (`CodeChecker store`) analysis results in a database, which can later on be
 viewed in a browser.
 
-Example:
+Examples:
 
 ```sh
 CodeChecker analyze ../codechecker_myProject_build.log -o my_plists
+CodeChecker analyze main.cpp -o my_plists
+CodeChecker analyze project_root -o my_plists
 ```
 
 **Note**: If your compilation database log file contains relative paths you
 have to make sure that you run the analysis command from the same directory
 as the logger was run (i.e. that paths are relative to).
+
+In case a source file or a project directory is given as analysis input, the
+process still relies on the compilation database JSON file, because CodeChecker
+tries to find it implicitly. So make sure that a `compile_commands.json`
+describing the build commands of analyzed modules is available in the project
+tree.
 
 `CodeChecker analyze` supports a myriad of fine-tuning arguments, explained
 below:
@@ -898,23 +900,22 @@ usage: CodeChecker analyze [-h] [-j JOBS]
                            [--cppcheck-args CPPCHECK_ARGS_CFG_FILE]
                            [--saargs CLANGSA_ARGS_CFG_FILE]
                            [--tidyargs TIDY_ARGS_CFG_FILE]
-                           [--tidy-config TIDY_CONFIG] [--timeout TIMEOUT]
+                           [--timeout TIMEOUT]
                            [--ctu | --ctu-collect | --ctu-analyze]
                            [--ctu-ast-mode {load-from-pch, parse-on-demand}]
                            [--ctu-reanalyze-on-failure]
                            [-e checker/group/profile]
                            [-d checker/group/profile] [--enable-all]
                            [--verbose {info,debug,debug_analyzer}]
-                           logfile
+                           input
 
 Use the previously created JSON Compilation Database to perform an analysis on
 the project, outputting analysis results in a machine-readable format.
 
 positional arguments:
-  logfile               Path to the JSON compilation command database files
-                        which were created during the build. The analyzers
-                        will check only the files registered in these build
-                        databases.
+  input                 The input of the analysis can be either a compilation
+                        database JSON file, a path to a source file or a path
+                        to a directory containing source files.
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -1107,11 +1108,6 @@ analyzer arguments:
   --tidyargs TIDY_ARGS_CFG_FILE
                         File containing argument which will be forwarded
                         verbatim for Clang-Tidy.
-  --tidy-config TIDY_CONFIG
-                        A file in YAML format containing the configuration of
-                        clang-tidy checkers. The file can be dumped by
-                        'CodeChecker analyzers --dump-config clang-tidy'
-                        command.
   --analyzer-config [ANALYZER_CONFIG [ANALYZER_CONFIG ...]]
                         Analyzer configuration options in the following
                         format: analyzer:key=value. The collection of the
