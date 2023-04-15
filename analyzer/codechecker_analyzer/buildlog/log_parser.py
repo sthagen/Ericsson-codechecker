@@ -276,7 +276,7 @@ def filter_compiler_includes_extra_args(compiler_flags):
     # If these options are present in the original build command, they must
     # be forwarded to get_compiler_includes and get_compiler_defines so the
     # resulting includes point to the target that was used in the build.
-    pattern = re.compile('-m(32|64)|-std=|-stdlib=|-nostdinc')
+    pattern = re.compile('-m(32|64)|-std=|-stdlib=|-nostdinc|--driver-mode=')
     extra_opts = list(filter(pattern.match, compiler_flags))
 
     pos = next((pos for pos, val in enumerate(compiler_flags)
@@ -1186,6 +1186,8 @@ class CompileActionUniqueingType(Enum):
     # alphabetically first output object file name
     SOURCE_REGEX = 2  # Based on source file, uniqueing by regex filter
     STRICT = 3  # Gives error in case of duplicate
+    SYMLINK = 4  # Based on source file, uniqueing by
+    # recognizing symlink and remove duplication
 
 
 def parse_unique_log(compilation_database,
@@ -1258,6 +1260,8 @@ def parse_unique_log(compilation_database,
             build_action_uniqueing = CompileActionUniqueingType.NONE
         elif compile_uniqueing == "strict":
             build_action_uniqueing = CompileActionUniqueingType.STRICT
+        elif compile_uniqueing == "symlink":
+            build_action_uniqueing = CompileActionUniqueingType.SYMLINK
         else:
             build_action_uniqueing = CompileActionUniqueingType.SOURCE_REGEX
             uniqueing_re = re.compile(compile_uniqueing)
@@ -1312,6 +1316,10 @@ def parse_unique_log(compilation_database,
                 elif action.output <\
                         uniqued_build_actions[action.source].output:
                     uniqued_build_actions[action.source] = action
+            elif build_action_uniqueing == CompileActionUniqueingType.SYMLINK:
+                real_path = os.path.realpath(entry['file'])
+                if real_path not in uniqued_build_actions:
+                    uniqued_build_actions[real_path] = action
             elif build_action_uniqueing ==\
                     CompileActionUniqueingType.SOURCE_REGEX:
                 LOG.debug("uniqueing regex")

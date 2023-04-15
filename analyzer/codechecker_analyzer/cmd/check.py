@@ -215,6 +215,10 @@ used to generate a log file on the fly.""")
                              "and an error is given if "
                              "there is more than one compilation "
                              "action for a source file. "
+                             "symlink: recognizes symlinks and removes "
+                             "duplication in the compilation database to "
+                             "ensure that each source file is "
+                             "analyzed only once. "
                              "alpha(default in CTU mode): If there is more "
                              "than one compilation action for a source "
                              "file, only the one is kept that belongs to the "
@@ -693,6 +697,15 @@ LLVM/Clang community, and thus discouraged.
                                     "could even result in a total failure of "
                                     "the analysis. USE WISELY AND AT YOUR "
                                     "OWN RISK!")
+
+    checkers_opts.add_argument('--no-missing-checker-error',
+                               dest="no_missing_checker_error",
+                               action='store_true',
+                               required=False,
+                               default=argparse.SUPPRESS,
+                               help="Emit a warning instead of an error when "
+                                    "an unknown checker name is given to "
+                                    "either --enable or --disable.")
 
     output_opts = parser.add_argument_group("output arguments")
 
