@@ -18,67 +18,85 @@
               </div>
             </v-container>
           </v-card-title>
-          <v-card-text class="px-0 pb-0">
-            <alerts
-              :success="success"
-              success-msg="Successfully logged in!"
-              :error="error"
-              :error-msg="errorMsg"
-            />
-
-            <v-form v-model="valid">
-              <v-text-field
-                v-model="username"
-                autocomplete="username"
-                label="Username"
-                name="username"
-                append-icon="mdi-account"
-                type="text"
-                required
-                outlined
-                :rules="[() => !!username || 'This field is required']"
-                :placeholder="placeholder"
-                @keyup.enter="login"
-              />
-
-              <v-text-field
-                id="password"
-                v-model="password"
-                autocomplete="current-password"
-                label="Password"
-                name="password"
-                append-icon="mdi-lock"
-                type="password"
-                required
-                outlined
-                :rules="[() => !!password || 'This field is required']"
-                :placeholder="placeholder"
-                @keyup.enter="login"
-              />
-            </v-form>
-          </v-card-text>
           <v-card-actions
+            v-if="providers.length !== 0"
             id="btn-container"
             class="d-flex justify-center flex-column"
           >
             <v-btn
-              id="login-btn"
               block
               x-large
               color="primary"
-              @click="login"
+              @click="ssoButtonHandleClickEvent"
             >
-              Login
+              {{ ssoButtonText }}
             </v-btn>
-            <v-btn
-              block
-              x-large
-              color="primary"
-              @click="openModal"
+            <a
+              href="#"
+              class="text-button text-no-wrap"
+              @click.prevent="toggleOtherLoginOptions"
             >
-              SSO login
-            </v-btn>
+              {{ optionsShow ? 'Hide other options' : 'Show other options' }}
+            </a>
           </v-card-actions>
+          <v-expand-transition>
+            <v-responsive
+              v-if="optionsShow"
+            >
+              <v-card-text class="px-0 pb-0">
+                <alerts
+                  :success="success"
+                  success-msg="Successfully logged in!"
+                  :error="error"
+                  :error-msg="errorMsg"
+                />
+                <v-form v-model="valid">
+                  <v-text-field
+                    v-model="username"
+                    autocomplete="username"
+                    label="Username"
+                    name="username"
+                    append-icon="mdi-account"
+                    type="text"
+                    required
+                    outlined
+                    :rules="[() => !!username || 'This field is required']"
+                    :placeholder="placeholder"
+                    @keyup.enter="login"
+                  />
+
+                  <v-text-field
+                    id="password"
+                    v-model="password"
+                    autocomplete="current-password"
+                    label="Password"
+                    name="password"
+                    append-icon="mdi-lock"
+                    type="password"
+                    required
+                    outlined
+                    :rules="[() => !!password || 'This field is required']"
+                    :placeholder="placeholder"
+                    @keyup.enter="login"
+                  />
+                </v-form>
+              </v-card-text>
+              <v-card-actions
+                id="btn-container"
+                class="d-flex justify-center flex-column"
+              >
+                <v-btn
+                  id="login-btn"
+                  block
+                  x-large
+                  color="primary"
+                  @click="login"
+                >
+                  Login
+                </v-btn>
+              </v-card-actions>
+            </v-responsive>
+          </v-expand-transition>
         </v-card>
       </v-col>
     </v-row>
@@ -142,14 +160,19 @@ export default {
       valid: false,
       providers: [],
       dialog: false,
-      on: false
+      on: false,
+      optionsShow: false
     };
   },
 
   computed: {
     ...mapGetters([
       "isAuthenticated"
-    ])
+    ]),
+    ssoButtonText() {
+      return this.providers.length === 1 ?
+        `Login with ${this.providers[0]}` : "SSO Login";
+    }
   },
 
   watch: {
@@ -176,6 +199,13 @@ export default {
     openModal() {
       this.dialog = true;
       this.on = true;
+    },
+    toggleOtherLoginOptions() {
+      this.optionsShow = !this.optionsShow;
+    },
+    ssoButtonHandleClickEvent() {
+      return this.providers.length === 1 ?
+        this.oauth(this.providers[0]) : this.openModal();
     },
     login() {
       if (!this.valid) return;
@@ -205,6 +235,7 @@ export default {
         if (providers) {
           this.providers = providers;
         }
+        this.optionsShow = this.providers.length === 0;
       }).catch(err => {
         this.errorMsg = `Providers list was passed incorrectly. ${err.message}`;
         this.error = true;
