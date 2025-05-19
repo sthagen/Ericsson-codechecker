@@ -348,6 +348,8 @@ def enable_auth(workspace):
 
     scfg_dict = load_json(server_cfg_file, {})
     scfg_dict["authentication"]["enabled"] = True
+    scfg_dict["authentication"]["failed_auth_message"] = \
+        "Personal access token based authentication only"
     scfg_dict["authentication"]["super_user"] = "root"
     scfg_dict["authentication"]["method_dictionary"]["enabled"] = True
     scfg_dict["authentication"]["method_dictionary"]["auths"] = \
@@ -360,16 +362,19 @@ def enable_auth(workspace):
 
     scfg_dict["authentication"]["method_oauth"] = {
         "enabled": True,
+        "shared_variables": {
+            "host": "http://localhost:8080",
+            "oauth_host": "http://localhost:3000"
+        },
         "providers": {
             "github": {
                 "enabled": True,
                 "client_id": "1",
                 "client_secret": "1",
-                "authorization_url": "http://localhost:3000/login",
-                "callback_url": "http://localhost:8080/login/" +
-                                "OAuthLogin/github",
-                "token_url": "http://localhost:3000/token",
-                "user_info_url": "http://localhost:3000/get_user",
+                "template": "github/v1",
+                "authorization_url": "{oauth_host}/login",
+                "token_url": "{oauth_host}/token",
+                "user_info_url": "{oauth_host}/get_user",
                 "user_emails_url": "https://api.github.com/user/emails",
                 "scope": "openid email profile",
                 "user_info_mapping": {
@@ -380,11 +385,10 @@ def enable_auth(workspace):
                 "enabled": True,
                 "client_id": "2",
                 "client_secret": "2",
-                "authorization_url": "http://localhost:3000/login",
-                "callback_url": "http://localhost:8080/login/" +
-                                "OAuthLogin/google",
-                "token_url": "http://localhost:3000/token",
-                "user_info_url": "http://localhost:3000/get_user",
+                "template": "google/v1",
+                "authorization_url": "{oauth_host}/login",
+                "token_url": "{oauth_host}/token",
+                "user_info_url": "{oauth_host}/get_user",
                 "scope": "openid email profile",
                 "user_info_mapping": {
                     "username": "email"
@@ -394,11 +398,10 @@ def enable_auth(workspace):
                 "enabled": True,
                 "client_id": "3",
                 "client_secret": "3",
-                "authorization_url": "http://localhost:3000/login",
-                "callback_url": "http://localhost:8080/login/" +
-                                "OAuthLogin/dummy",
-                "token_url": "http://localhost:3000/token",
-                "user_info_url": "http://localhost:3000/get_user",
+                "template": "github/v1",
+                "authorization_url": "{oauth_host}/login",
+                "token_url": "{oauth_host}/token",
+                "user_info_url": "{oauth_host}/get_user",
                 "scope": "openid email profile",
                 "user_info_mapping": {
                     "username": "email"
