@@ -22,6 +22,7 @@ from codechecker_api.codeCheckerServersideTasks_v6.ttypes import \
 from codechecker_common.logger import get_logger
 
 from codechecker_server.profiler import timeit
+from codechecker_server.session_manager import SessionManager
 
 from ..database.config_db_model import BackgroundTask as DBTask, Product
 from ..database.database import DBSession, conv
@@ -113,9 +114,11 @@ class ThriftTaskHandler:
 
     def __init__(self,
                  configuration_database_sessionmaker,
+                 session_manager: SessionManager,
                  task_manager: TaskManager,
                  auth_session):
         self._config_db = configuration_database_sessionmaker
+        self._session_manager = session_manager
         self._task_manager = task_manager
         self._auth_session = auth_session
 
@@ -152,12 +155,14 @@ class ThriftTaskHandler:
                             permissions.PRODUCT_ACCESS,
                             {"config_db_session": session,
                              "productID": associated_product.id},
-                            self._auth_session)
+                            self._auth_session,
+                            self._session_manager.is_enabled)
             else:
                 has_right_to_query_status = permissions.require_permission(
                     permissions.SUPERUSER,
                     {"config_db_session": session},
-                    self._auth_session)
+                    self._auth_session,
+                    self._session_manager.is_enabled)
 
             if not has_right_to_query_status:
                 raise RequestFailed(
@@ -188,7 +193,8 @@ class ThriftTaskHandler:
                 if not permissions.require_permission(
                         permissions.SUPERUSER,
                         {"config_db_session": session},
-                        self._auth_session):
+                        self._auth_session,
+                        self._session_manager.is_enabled):
                     raise RequestFailed(
                         ErrorCode.UNAUTHORIZED,
                         "Querying service tasks (not associated with a "
@@ -199,7 +205,8 @@ class ThriftTaskHandler:
                     if not permissions.require_permission(
                         permissions.PRODUCT_ACCESS,
                         {"config_db_session": session, "productID": prod_id},
-                        self._auth_session)]
+                        self._auth_session,
+                        self._session_manager.is_enabled)]
                 if no_access_products:
                     no_access_products = [session.get(Product, product_id)
                                           .endpoint
@@ -299,7 +306,8 @@ class ThriftTaskHandler:
                         has_superuser = permissions.require_permission(
                             permissions.SUPERUSER,
                             {"config_db_session": session},
-                            self._auth_session)
+                            self._auth_session,
+                            self._session_manager.is_enabled)
                     if not has_superuser:
                         continue
                 else:
@@ -314,7 +322,8 @@ class ThriftTaskHandler:
                                 permissions.PRODUCT_ACCESS,
                                 {"config_db_session": session,
                                  "productID": db_task.product_id},
-                                self._auth_session)
+                                self._auth_session,
+                                self._session_manager.is_enabled)
                         if not product_access_rights[db_task.product_id]:
                             continue
 
@@ -351,12 +360,14 @@ class ThriftTaskHandler:
                             permissions.PRODUCT_ADMIN,
                             {"config_db_session": session,
                                 "productID": associated_product.id},
-                            self._auth_session)
+                            self._auth_session,
+                            self._session_manager.is_enabled)
             else:
                 has_right_to_cancel = permissions.require_permission(
                     permissions.SUPERUSER,
                     {"config_db_session": session},
-                    self._auth_session)
+                    self._auth_session,
+                    self._session_manager.is_enabled)
 
             if not has_right_to_cancel:
                 raise RequestFailed(
