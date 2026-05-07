@@ -25,5 +25,7 @@ const props = defineProps({
 
 const color = useStrToColor();
 
-const userIconName = computed(() => props.value.charAt(0).toUpperCase());
+const userIconName = computed(
+  () => (props.value || "?").charAt(0).toUpperCase()
+);
 </script>

@@ -156,7 +156,7 @@ watch(menu, async show => {
       items.value = await props.fetchItems();
       reloadItems.value = false;
     }
-  } else if (!preventApply.value) {
+  } else if (!preventApply.value && items.value.length > 0) {
     applyFilters(allSelectedItems.value);
   }
 });
@@ -203,8 +203,7 @@ function filterIsChanged(_selectedItems) {
 }
 
 function cancel() {
-  preventApply.value = true;
-  menu.value = false;
+  closeMenu();
   emit("cancel");
 }
 

@@ -84,7 +84,8 @@ function decodeValue(diffTypeStr) {
 
 function updateReportFilter() {
   let diffTypeVal = baseSelectOptionFilter.selectedItems.value.id;
-  if (Array.isArray(baseSelectOptionFilter.selectedItems.value)) {
+  if (Array.isArray(baseSelectOptionFilter.selectedItems.value) &&
+      baseSelectOptionFilter.selectedItems.value.length !== 0) {
     diffTypeVal = baseSelectOptionFilter.selectedItems.value[0].id;
   }
   baseSelectOptionFilter.setCmpData({

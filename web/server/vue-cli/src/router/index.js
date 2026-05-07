@@ -19,7 +19,7 @@ const router = createRouter({
       component: () => import("@/views/Login")
     },
     {
-      path: "/login/oAuthlogin/:provider",
+      path: "/login/OAuthLogin/:provider",
       name: "oauthlogin",
       component: () => import("@/views/OAuthLogin")
     },

@@ -234,7 +234,7 @@ function login() {
     error.value = false;
 
     const returnTo = route.query["return_to"];
-    router.replace(returnTo || { name: "products" });
+    router.replace(returnTo ? { path: returnTo } : { name: "products" });
   }).catch(err => {
     errorMsg.value = `Failed to log in! ${err.message}`;
     error.value = true;
@@ -272,7 +272,7 @@ function oauth(provider) {
       success.value = false;
       error.value = false;
 
-      router.push({ path: url });
+      window.location.href = url;
     } else {
       errorMsg.value = `Server returned an invalid URL: ${url}`;
       error.value = true;

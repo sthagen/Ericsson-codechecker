@@ -1,49 +1,48 @@
 <template>
-  <div>
-    <v-dialog
-      v-model="dialog"
-      width="500"
-      :scrollable="true"
-    >
-      <v-card>
-        <v-card-title
-          class="headline primary white--text"
-          primary-title
-        >
-          Credits
+  <v-dialog
+    v-model="dialog"
+    width="500"
+    :scrollable="true"
+  >
+    <v-card>
+      <v-card-title
+        class="headline primary black-text"
+        primary-title
+      >
+        Credits
 
-          <v-spacer />
+        <v-spacer />
 
-          <v-btn icon @click="dialog = false">
-            <v-icon>mdi-close</v-icon>
-          </v-btn>
-        </v-card-title>
-        <v-card-text>
-          <v-list>
-            <v-list-item
-              v-for="credit in credits"
-              :key="credit.name"
-            >
-              <template v-slot:prepend>
-                <v-btn
-                  :href="`http://github.com/${credit.github}`"
-                  target="_blank"
-                  icon
-                  color="primary"
-                >
-                  <v-icon>mdi-github</v-icon>
-                </v-btn>
-              </template>
+        <v-btn icon @click="dialog = false">
+          <v-icon>mdi-close</v-icon>
+        </v-btn>
+      </v-card-title>
+      <v-card-text>
+        <v-list>
+          <v-list-item
+            v-for="credit in credits"
+            :key="credit.name"
+          >
+            <template v-slot:prepend>
+              <v-btn
+                :href="`http://github.com/${credit.github}`"
+                target="_blank"
+                icon
+                color="primary"
+              >
+                <v-icon>mdi-github</v-icon>
+              </v-btn>
+            </template>
 
-              
-              <v-list-item-title>{{ credit.name }}</v-list-item-title>
-              <v-list-item-subtitle>{{ credit.email }}</v-list-item-subtitle>
-            </v-list-item>
-          </v-list>
-        </v-card-text>
-      </v-card>
-    </v-dialog>
+            <v-list-item-title>{{ credit.name }}</v-list-item-title>
+            <v-list-item-subtitle>{{ credit.email }}</v-list-item-subtitle>
+          </v-list-item>
+        </v-list>
+      </v-card-text>
+    </v-card>
+  </v-dialog>
 
+  <v-card>
     <v-list>
       <v-list-item
         href="http://github.com/Ericsson/codechecker"
@@ -93,7 +92,7 @@
         </v-list-item-title>
       </v-list-item>
     </v-list>
-  </div>
+  </v-card>
 </template>
 
 <script setup>

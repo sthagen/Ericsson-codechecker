@@ -1,6 +1,6 @@
 <template>
   <v-card
-    elevation="0"
+    elevation="4"
   >
     <slot name="prepend-toolbar" />
 

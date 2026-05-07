@@ -125,9 +125,16 @@ watch(currentProduct, () => {
     }));
 });
 
-onMounted(() => {
-  getLoggedInUser();
+watch(currentUser, () => {
+  if (!currentUser.value) {
+    systemPermissions.value = [];
+    return;
+  }
   fetchPermissions();
+}, { immediate: true });
+
+onMounted(async () => {
+  await getLoggedInUser();
 });
 
 function fetchPermissions() {
@@ -151,7 +158,7 @@ function logOut() {
   });
 }
 
-function getLoggedInUser() {
-  store.dispatch(GET_LOGGED_IN_USER);
+async function getLoggedInUser() {
+  await store.dispatch(GET_LOGGED_IN_USER);
 }
 </script>

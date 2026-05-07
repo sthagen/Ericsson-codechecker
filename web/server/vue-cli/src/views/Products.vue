@@ -31,16 +31,17 @@
             <v-spacer />
 
             <v-col cols="auto" align="right">
-              <span
-                v-if="isSuperUser"
-              >
-                <v-spacer />
+              <span>
+                <edit-announcement-btn
+                  v-if="isSuperUser"
+                />
 
-                <edit-announcement-btn />
-
-                <edit-global-permission-btn />
+                <edit-global-permission-btn
+                  v-if="isSuperUser"
+                />
 
                 <new-product-btn
+                  v-if="isSuperUser"
                   :is-super-user="isSuperUser"
                   @on-complete="onCompleteNewProduct"
                 />
