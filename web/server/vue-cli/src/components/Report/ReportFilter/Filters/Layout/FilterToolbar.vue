@@ -1,6 +1,7 @@
 <template>
   <v-expansion-panels
     v-model="panelOpen"
+    flat
   >
     <v-expansion-panel
       eager
@@ -31,7 +32,7 @@
           <slot name="prepend-toolbar-items" />
 
           <v-btn
-            icon="mdi-delete"
+            icon="mdi-close-circle"
             size="small"
             variant="plain"
             @click.stop="emit('clear');"
