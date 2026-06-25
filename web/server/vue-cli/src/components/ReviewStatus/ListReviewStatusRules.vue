@@ -1,13 +1,15 @@
 <template>
-  <v-data-table
-    v-model:options="pagination"
+  <v-data-table-server
+    v-model:page="page"
+    v-model:items-per-page="itemsPerPage"
+    v-model:sort-by="sortBy"
+    v-model:items-per-page-options="itemsPerPageOptions"
     :headers="headers"
     :items="rules"
     :items-length="totalItems"
     :loading="loading"
-    :mobile-breakpoint="1000"
     loading-text="Loading review status rules..."
-    :footer-props="footerProps"
+    :mobile-breakpoint="1000"
     item-key="reportHash"
   >
     <template v-slot:top>
@@ -144,7 +146,7 @@
         @click="editReviewStatusRule(item)"
       />
     </template>
-  </v-data-table>
+  </v-data-table-server>
 </template>
 
 <script setup>
@@ -177,8 +179,7 @@ const reviewStatus = useReviewStatus();
 const itemsPerPageOptions = [
   { value: 25, title: "25" },
   { value: 50, title: "50" },
-  { value: 100, title: "100" },
-  { value: -1, title: "$vuetify.dataFooter.itemsPerPageAll" }
+  { value: 100, title: "100" }
 ];
 
 const page = ref(parseInt(route.query["page"]) || 1);
@@ -188,19 +189,15 @@ const itemsPerPage = ref(
 );
 
 const sortBy = ref(
-  route.query["sort-by"] 
-    ? [ { 
-      key: route.query["sort-by"], 
-      order: route.query["sort-desc"] === "true" ? "desc" : "asc" 
+  route.query["sort-by"]
+    ? [ {
+      key: route.query["sort-by"],
+      order: route.query["sort-desc"] === "true" ? "desc" : "asc"
     } ]
     : [ { key: "name", order: "asc" } ]
 );
 
 const initialized = ref(false);
-
-const footerProps = {
-  itemsPerPageOptions: itemsPerPageOptions
-};
 const totalItems = ref(0);
 const rules = ref([]);
 const filter = ref(null);

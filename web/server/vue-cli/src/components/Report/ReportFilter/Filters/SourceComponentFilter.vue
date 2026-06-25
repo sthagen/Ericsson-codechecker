@@ -21,12 +21,17 @@
         />
       </template>
       <template v-slot:prepend-toolbar-items>
-        <v-icon
-          start
-          class="mr-1"
+        <v-chip
+          color="grey"
+          variant="outlined"
+          size="small"
         >
-          {{ filterIconNames[reportFilterMode] }}
-        </v-icon>
+          <v-icon
+            :icon="filterIconNames[reportFilterMode]"
+            class="start"
+            color="text-grey-darken-1"
+          />
+        </v-chip>
         <v-btn
           v-if="administrating"
           class="manage-components-btn"
@@ -83,7 +88,14 @@ const props = defineProps({
 
 const emit = defineEmits([ "update:url" ]);
 
+const baseSelectOptionFilter =
+  useBaseSelectOptionFilter(toRef(props, "namespace"));
+baseSelectOptionFilter.fetchItems.value = fetchItems;
+baseSelectOptionFilter.updateReportFilter.value = updateReportFilter;
+
 const id = "source-component";
+baseSelectOptionFilter.id.value = id;
+
 const anywhereId = ref("anywhere-sourcecomponent");
 const sameOriginId = ref("sameorigin-sourcecomponent");
 const isDialogOpen = ref(false);
@@ -96,11 +108,6 @@ const filterIconNames = ref({
   "anywhere": "mdi-ray-start-vertex-end",
   "single-origin": "mdi-ray-vertex"
 });
-
-const baseSelectOptionFilter =
-  useBaseSelectOptionFilter(toRef(props, "namespace"));
-baseSelectOptionFilter.fetchItems.value = fetchItems;
-baseSelectOptionFilter.updateReportFilter.value = updateReportFilter;
 
 const search = ref({
   placeHolder : "Search for source components...",
