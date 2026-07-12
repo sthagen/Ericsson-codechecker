@@ -72,6 +72,8 @@ from .task_executors.main import executor as background_task_executor
 from .task_executors.task_manager import \
     TaskManager as BackgroundTaskManager
 
+from .session_manager import _Session
+
 
 LOG = get_logger('server')
 
@@ -85,6 +87,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
     Handle thrift and browser requests
     Simply modified and extended version of SimpleHTTPRequestHandler
     """
+    server: "CCSimpleHttpServer"
     auth_session = None
 
     def __init__(self, request, client_address, server):
@@ -114,7 +117,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(result)
 
-    def __check_session_header(self):
+    def __check_session_header(self) -> Optional[_Session]:
         """
         Check the CodeChecker privileged access cookie in the request headers.
 
@@ -147,10 +150,6 @@ class RequestHandler(SimpleHTTPRequestHandler):
                     session = self.server.manager.get_session(values[1])
 
         if session and session.is_alive:
-            # If a valid bearer token was found and it can still be used,
-            # mark that the user's last access to the server was the
-            # request that resulted in the execution of this function.
-            session.revalidate()
             return session
         else:
             # If the user's token is no longer usable (invalid),
@@ -476,11 +475,9 @@ class RequestHandler(SimpleHTTPRequestHandler):
                     elif request_endpoint == "CodeCheckerService":
                         # This endpoint is a product's report_server.
                         if not product:
-                            error_msg = \
-                                "Requested CodeCheckerService on a " \
-                                f"nonexistent product: '{product_endpoint}'."
-                            LOG.error(error_msg)
-                            raise ValueError(error_msg)
+                            raise ProductNotFoundError(
+                                "Requested CodeCheckerService on a "
+                                f"nonexistent product: '{product_endpoint}'.")
 
                         if product_endpoint:
                             # The current request came through a
@@ -499,11 +496,10 @@ class RequestHandler(SimpleHTTPRequestHandler):
                             self.server.context)
                         processor = ReportAPI_v6.Processor(acc_handler)
                     else:
-                        LOG.debug("This API endpoint does not exist.")
-                        error_msg = f"No API endpoint named '{self.path}'."
-                        raise ValueError(error_msg)
+                        raise ProductNotFoundError(
+                            f"No API endpoint named '{self.path}'.")
                 else:
-                    raise ValueError(
+                    raise ProductNotFoundError(
                         f"API version {major_version} not supported")
 
             else:

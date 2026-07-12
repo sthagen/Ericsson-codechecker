@@ -111,7 +111,7 @@
       v-if="limit"
       class="text-center text-secondary"
     >
-      <span v-if="limit === items.length">Only the first</span>
+      <span v-if="limit === items.length">Only the first </span>
       <i>{{ items.length }}</i> item(s) shown.
     </div>
 
@@ -201,7 +201,9 @@ const filter = _.debounce(async value => {
 }, 500);
 
 onMounted(() => {
-  localSelectedItems.value = props.selectedItems || [];
+  localSelectedItems.value = props.selectedItems
+    ? [ ...props.selectedItems ]
+    : [];
 });
 
 // Emit the `apply` event with the selected items.
