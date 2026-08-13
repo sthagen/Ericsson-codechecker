@@ -100,9 +100,9 @@ import { ccService, handleThriftError } from "@cc-api";
 import {
   Checker,
   Guideline,
-  MAX_QUERY_SIZE,
   ReportFilter,
-  RunFilter
+  RunFilter,
+  Severity
 } from "@cc/report-server-types";
 import { computed, ref, watch } from "vue";
 import StatisticsDialog from "../StatisticsDialog";
@@ -195,41 +195,50 @@ function checker_stat(stat) {
           const filtered_stat = Object.keys(stat).filter(
             checkerId => rule.checkers.map(c => c.checkerName).includes(
               stat[checkerId].checkerName));
+
+          const matchedCheckerNames = new Set(
+            filtered_stat.map(checkerId => stat[checkerId].checkerName)
+          );
+
+          const matchedCheckers = filtered_stat.map(checkerId => {
+            return {
+              name: stat[checkerId].checkerName,
+              severity: stat[checkerId].severity,
+              enabledInAllRuns: stat[checkerId].disabled.length === 0
+                ? 1
+                : 0,
+              enabledRunLength: stat[checkerId].enabled.length,
+              disabledRunLength: stat[checkerId].disabled.length,
+              unknownRunLength: stat[checkerId].unknown.length,
+              closed: stat[checkerId].closed.toNumber(),
+              outstanding: stat[checkerId].outstanding.toNumber(),
+            };
+          });
+
+          const missingCheckers = rule.checkers
+            .filter(checker => !matchedCheckerNames.has(checker.checkerName))
+            .map(checker => {
+              return {
+                name: checker.checkerName,
+                severity: checker.severity !== null
+                  ? severity.severityFromStringToCode(checker.severity)
+                  : Severity.UNSPECIFIED,
+                enabledInAllRuns: 0,
+                enabledRunLength: 0,
+                disabledRunLength: runs.value.length,
+                unknownRunLength: 0,
+                closed: 0,
+                outstanding: 0,
+              };
+            });
+
           return {
             guidelineName: guideline,
             guidelineRule: rule.ruleId,
             guidelineUrl: rule.url,
             guidelineRuleTitle: rule.title,
             guidelineLevel: rule.level,
-            checkers: filtered_stat.length
-              ? filtered_stat.map(checkerId => {
-                return {
-                  name: stat[checkerId].checkerName,
-                  severity: stat[checkerId].severity,
-                  enabledInAllRuns: stat[checkerId].disabled.length === 0
-                    ? 1
-                    : 0,
-                  enabledRunLength: stat[checkerId].enabled.length,
-                  disabledRunLength: stat[checkerId].disabled.length,
-                  unknownRunLength: stat[checkerId].unknown.length,
-                  closed: stat[checkerId].closed.toNumber(),
-                  outstanding: stat[checkerId].outstanding.toNumber(),
-                };
-              })
-              : (rule.checkers.length ?
-                rule.checkers.map(checker => {
-                  return {
-                    name: checker.checkerName,
-                    severity: severity.severityFromStringToCode(
-                      checker.severity),
-                    enabledInAllRuns: 0,
-                    enabledRunLength: 0,
-                    disabledRunLength: runs.value.length,
-                    closed: 0,
-                    outstanding: 0,
-                  };
-                })
-                : [])
+            checkers: [ ...matchedCheckers, ...missingCheckers ]
           };
         })
       );
@@ -310,49 +319,14 @@ async function getAllGuidelineRules() {
   });
 }
 
-async function getRunData() {
+async function fetchStatistics() {
+  loading.value = true;
+
   const _filter = new RunFilter({
     ids: baseStatistics.runIds.value
   });
 
-  const _runCount = await new Promise(resolve => {
-    ccService.getClient().getRunCount(
-      _filter,
-      handleThriftError(runCnt => {
-        resolve(runCnt.toNumber());
-      })
-    );
-  });
-
-  const _runs = [];
-  const _limit = MAX_QUERY_SIZE;
-  for (let _offset = 0; _offset <= _runCount; _offset+=_limit) {
-    const _limitedRuns = await new Promise(resolve => {
-      ccService.getClient().getRunData(
-        _filter,
-        _limit,
-        _offset,
-        null,
-        handleThriftError(runDataList => {
-          resolve(
-            runDataList.map(runData => ({
-              runId: runData.runId,
-              runName: runData.name,
-              codeCheckerVersion: runData.codeCheckerVersion
-            }))
-          );
-        })
-      );
-    });
-    _runs.push(..._limitedRuns);
-  }
-
-  return _runs;
-}
-
-async function fetchStatistics() {
-  loading.value = true;
-  await fetchRuns();
+  runs.value = await ccService.getRuns(_filter);
 
   await getAllGuidelineRules();
 
@@ -369,13 +343,6 @@ async function fetchStatistics() {
 
   checker_stats.value = checker_stat_result;
   checker_stat(checker_stat_result);
-  loading.value = false;
-}
-
-async function fetchRuns() {
-  loading.value = true;
-  const _runs = await getRunData();
-  runs.value = _runs;
   loading.value = false;
 }
 
