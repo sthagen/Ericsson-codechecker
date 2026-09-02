@@ -141,6 +141,16 @@ const guidelineOptions = ref([
     id: "memory-safety",
     name: "Memory-safety related CWEs",
     value: 4
+  },
+  {
+    id: "owasp-top-10-2025",
+    name: "OWASP Top 10 Web Application Security Risks 2025",
+    value: 5
+  },
+  {
+    id: "cwe-vulnerabilities",
+    name: "CWE Vulnerabilities",
+    value: 6
   }
 ]);
 const all_guideline_rules = ref({});

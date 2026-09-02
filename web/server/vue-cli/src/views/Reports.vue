@@ -24,7 +24,7 @@
           variant="outlined"
         >
           <v-btn
-            value="table"
+            value="list"
             size="small"
             @click="setReportFilter({ filepath: null })"
           >
@@ -33,20 +33,20 @@
           <v-btn
             value="tree"
             size="small"
-            @click="setReportFilter({ filepath: null })"
+            @click="onFileTreeViewClick"
           >
             File Tree
           </v-btn>
         </v-btn-toggle>
         <v-spacer />
         <set-cleanup-plan-btn
-          v-if="viewMode === 'table'"
+          v-if="viewMode === 'list'"
           :selected-reports="selected"
         />
       </div>
 
       <v-data-table-server
-        v-if="viewMode === 'table'"
+        v-if="viewMode === 'list'"
         v-model="selected"
         v-model:page="page"
         v-model:items-per-page="itemsPerPage"
@@ -421,7 +421,15 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue";
+import {
+  computed,
+  onActivated,
+  onDeactivated,
+  onMounted,
+  onUnmounted,
+  ref,
+  watch
+} from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useStore } from "vuex";
 import { Pane, Splitpanes } from "splitpanes";
@@ -569,8 +577,8 @@ const checkerDocDialog = ref(false);
 const selectedChecker = ref(null);
 const expanded = ref([]);
 const expandedItemsHistory = ref({});
-const viewMode = ref("table");
-const openedTreeItems = ref([]);
+const viewMode = ref(route.query["view"] === "tree" ? "tree" : "list");
+const openedTreeItems = ref(parseOpenedPaths(route.query["tree-open"]));
 const allReportsFileCounts = ref({});
 const fileSeverities = ref({});
 const treeItems = ref([]);
@@ -710,6 +718,14 @@ watch(allReportsFileCounts, () => {
   buildTreeItems();
 }, { deep: true });
 
+watch(
+  [ viewMode, openedTreeItems ],
+  () => {
+    updateUrl();
+  },
+  { deep: true, immediate: true }
+);
+
 function setReportFilter(params) {
   store.commit(SET_REPORT_FILTER, params);
 }
@@ -760,7 +776,7 @@ async function applyTreeFilter(params) {
 
   await router.replace({ query }).catch(() => {});
   setRefreshFilterState(true);
-  viewMode.value = "table";
+  viewMode.value = "list";
 }
 
 function onTreeItemClick(item) {
@@ -792,6 +808,34 @@ function toggleTreeSort(statKey) {
     treeSortKey.value = null;
     treeSortOrder.value = null;
   }
+}
+
+// "/a/b/c" -> ["/a", "/a/b", "/a/b/c"]
+function ancestorChain(fullPath) {
+  if (!fullPath) return [];
+  const parts = fullPath.split("/").filter(Boolean);
+  const chain = [];
+  let current = "";
+  parts.forEach(part => {
+    current += "/" + part;
+    chain.push(current);
+  });
+  return chain;
+}
+
+// Drops paths that are an ancestor of another opened path.
+function leafPaths(paths) {
+  return paths.filter(p =>
+    !paths.some(other => other !== p && other.startsWith(p + "/"))
+  );
+}
+
+function parseOpenedPaths(value) {
+  if (!value) return [];
+  const paths = Array.isArray(value) ? value : String(value).split(",");
+  const all = new Set();
+  paths.forEach(p => ancestorChain(p).forEach(a => all.add(a)));
+  return Array.from(all);
 }
 
 function i64ToNum(val) {
@@ -904,6 +948,27 @@ function buildTreeItems() {
   treeItems.value = items;
 }
 
+function collectSingleChildedNodes(nodes, opened) {
+  nodes.forEach(node => {
+    if (!node.children || node.children.length === 0) return;
+    opened.push(node.fullPath);
+    if (node.children.length === 1) {
+      collectSingleChildedNodes(node.children, opened);
+    }
+  });
+}
+
+function autoExpandTree() {
+  const opened = [];
+  collectSingleChildedNodes(treeItems.value, opened);
+  openedTreeItems.value = opened;
+}
+
+function onFileTreeViewClick() {
+  setReportFilter({ filepath: null });
+  autoExpandTree();
+}
+
 function itemExpanded(expandedItems) {
   if (!expandedItems || expandedItems.length === 0) return;
 
@@ -980,6 +1045,9 @@ function updateUrl() {
   const _page = page.value === 1 ? undefined : page.value;
   const _sortBy = sortBy.value?.[0]?.key;
   const _sortDesc = sortBy.value?.[0]?.order === "desc";
+  const _view = viewMode.value === "tree" ? "tree" : "list";
+  const _openLeaves = leafPaths(openedTreeItems.value);
+  const _treeOpen = _openLeaves.length ? _openLeaves.join(",") : undefined;
 
   router.replace({
     query: {
@@ -988,6 +1056,8 @@ function updateUrl() {
       "page": _page,
       "sort-by": _sortBy,
       "sort-desc": _sortDesc,
+      "view": _view,
+      "tree-open": _treeOpen,
     }
   }).catch(() => {});
 }
@@ -1065,13 +1135,22 @@ function prettifyDate(date) {
 function getBugPathLenColor(length) {
   return gradientColor.getGradientColor(length);
 }
+
+function lockBodyScroll() {
+  document.body.style.overflow = "hidden";
+}
+
+function unlockBodyScroll() {
+  document.body.style.overflow = "";
+}
+
+onMounted(lockBodyScroll);
+onActivated(lockBodyScroll);
+onUnmounted(unlockBodyScroll);
+onDeactivated(unlockBodyScroll);
 </script>
 
 <style lang="scss">
-
-body {
-  overflow: hidden;
-}
 
 .height-constraint {
   height: calc(100vh - 100px);

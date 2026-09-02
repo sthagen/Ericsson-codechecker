@@ -67,6 +67,7 @@ from .database.config_db_model import Product as ORMProduct, \
     Configuration as ORMConfiguration
 from .database.database import DBSession
 from .database.run_db_model import Run
+from .database import db_cleanup
 from .product import Product
 from .task_executors.main import executor as background_task_executor
 from .task_executors.task_manager import \
@@ -651,7 +652,8 @@ class CCSimpleHttpServer(HTTPServer):
                  server_secrets_file,
                  force_auth,
                  api_handler_processes,
-                 task_worker_processes):
+                 task_worker_processes,
+                 skip_db_cleanup):
 
         LOG.debug("Initializing HTTP server...")
 
@@ -687,6 +689,9 @@ class CCSimpleHttpServer(HTTPServer):
         except ValueError as verr:
             LOG.error(verr)
             sys.exit(1)
+
+        if not skip_db_cleanup:
+            self.cleanup_config_database()
 
         self.__task_queue = task_queue
         self.task_manager = BackgroundTaskManager(
@@ -991,6 +996,17 @@ class CCSimpleHttpServer(HTTPServer):
             if ep not in endpoints_to_keep:
                 self.remove_product(ep)
 
+    def cleanup_config_database(self):
+        """
+        Do garbage collection on the config database.
+        """
+        LOG.info("Starting garbage collection on the config database ...")
+        db_cleanup.delete_expired_auth_sessions(
+                self.config_session,
+                self.manager.session_lifetime_duration,
+                None)
+        LOG.info("Finished garbage collection on the config database.")
+
 
 class CCSimpleHttpServerIPv6(CCSimpleHttpServer):
     """
@@ -1051,6 +1067,11 @@ def start_server(config_directory: str, workspace_directory: str,
     server_secrets_file = os.path.join(config_directory, 'server_secrets.json')
 
     if not skip_db_cleanup:
+        # TODO:
+        # Move these product database cleanups to the
+        # CCSimpleHttpServer class. The config database
+        # is also cleaned up during server class __init__.
+
         all_success, fails = _do_db_cleanups(config_sql_server,
                                              context,
                                              check_env)
@@ -1125,7 +1146,8 @@ def start_server(config_directory: str, workspace_directory: str,
                                server_secrets_file,
                                force_auth,
                                api_handler_processes,
-                               task_worker_processes)
+                               task_worker_processes,
+                               skip_db_cleanup)
 
     api_processes: Dict[int, Process] = {}
     bg_processes: Dict[int, Process] = {}

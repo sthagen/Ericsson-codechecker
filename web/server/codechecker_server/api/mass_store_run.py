@@ -20,10 +20,11 @@ import json
 import os
 from pathlib import Path
 import sqlalchemy
+from sqlalchemy.orm import Session as SA_Session
 import tempfile
 import time
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, \
-    cast
+from typing import Any, Callable, Dict, List, NoReturn, \
+    Optional, Set, Tuple, Union, cast
 import zipfile
 import zlib
 
@@ -46,10 +47,9 @@ from ..database import db_cleanup
 from ..database.config_db_model import Product
 from ..database.database import DBSession
 from ..database.run_db_model import \
-    AnalysisInfo, AnalyzerStatistic, \
-    BugPathEvent, BugReportPoint, \
+    AnalysisInfo, AnalysisInfoFile, AnalyzerStatistic, \
+    ReportPathData, ReportPathDataFile, \
     Checker, CheckerSet, CheckerSetItem, \
-    ExtendedReportData, \
     File, FileContent, \
     Report as DBReport, ReportAnnotations, ReviewStatus as ReviewStatusRule, \
     Run, RunLock as DBRunLock, RunHistory, \
@@ -61,9 +61,6 @@ from ..product import Product as ServerProduct
 from ..session_manager import SessionManager
 from ..task_executors.abstract_task import AbstractTask, TaskCancelHonoured
 from ..task_executors.task_manager import TaskManager
-from .thrift_enum_helper import report_extended_data_type_str
-
-from sqlalchemy.orm import Session as SA_Session
 
 
 LOG = get_logger('server')
@@ -236,6 +233,14 @@ def unzip(run_name: str, b64zip: str, output_dir: Path) -> int:
     This ZIP is extracted to a temporary directory and the ZIP is then deleted.
     The function returns the size of the extracted decompressed ZIP file.
     """
+    decompressed_zip_max_size = 1024 * 1024 * 1024 * 16  # 16 GiB
+
+    def reject_unzip() -> NoReturn:
+        error_message = (f"Rejected storage of run '{run_name}', "
+                         "decompressed ZIP file is too large!")
+        LOG.info(error_message)
+        raise RequestFailed(ErrorCode.IOERROR, error_message)
+
     if not b64zip:
         return 0
 
@@ -244,9 +249,14 @@ def unzip(run_name: str, b64zip: str, output_dir: Path) -> int:
         LOG.debug("Decompressing input massStoreRun() ZIP to '%s' ...",
                   zip_file.name)
         start_time = time.time()
-        zip_file.write(zlib.decompress(base64.b64decode(b64zip)))
+        zlib_decomp = zlib.decompressobj()
+        zip_file.write(zlib_decomp.decompress(
+            base64.b64decode(b64zip), max_length=decompressed_zip_max_size))
         zip_file.flush()
         end_time = time.time()
+
+        if zlib_decomp.unconsumed_tail:
+            reject_unzip()
 
         size = os.stat(zip_file.name).st_size
         LOG.debug("Decompressed input massStoreRun() ZIP '%s' -> '%s' "
@@ -260,7 +270,12 @@ def unzip(run_name: str, b64zip: str, output_dir: Path) -> int:
             LOG.debug("Extracting massStoreRun() ZIP '%s' to '%s' ...",
                       zip_file.name, output_dir)
             try:
-                zip_handle.extractall(output_dir)
+                unzipped_size = 0
+                for member in zip_handle.infolist():
+                    unzipped_size += member.file_size
+                    if unzipped_size > decompressed_zip_max_size:
+                        reject_unzip()
+                    zip_handle.extract(member, output_dir)
                 return size
             except Exception:
                 LOG.error("Failed to extract received ZIP.")
@@ -759,7 +774,14 @@ class MassStoreRun:
                 continue
 
             with DBSession(self.__product.session_factory) as session:
-                self.__add_file_content(session, source_file_path, file_hash)
+                try:
+                    self.__add_file_content(session, source_file_path,
+                                            file_hash)
+                    session.commit()
+                except sqlalchemy.exc.IntegrityError:
+                    # Other transaction might have added the same content in
+                    # the meantime.
+                    session.rollback()
 
                 file_path_to_id[trimmed_file_path] = add_file_record(
                     session, trimmed_file_path, file_hash)
@@ -814,14 +836,15 @@ class MassStoreRun:
 
     def __add_file_content(
         self,
-        session: DBSession,
+        session: SA_Session,
         source_file_name: str,
         content_hash: Optional[str]
-    ):
+    ) -> str:
         """
         Add the necessary file contents. If content_hash in None then this
-        function calculates the content hash. Or if it's available at the
-        caller and it's provided then it will not be calculated again.
+        function calculates and returns the content hash.
+        Or if it's available at the caller and it's provided then it will
+        not be calculated again.
 
         This function must not be called between add_checker_run() and
         finish_checker_run() functions when SQLite database is used!
@@ -850,28 +873,25 @@ class MassStoreRun:
         if not file_content:
             if not source_file_content:
                 source_file_content = get_file_content(source_file_name)
-            try:
-                compressed_content = zlib.compress(
-                    source_file_content, zlib.Z_BEST_COMPRESSION)
 
-                if session.bind.dialect.name == 'postgresql':
-                    insert_stmt = sqlalchemy.dialects.postgresql \
-                        .insert(FileContent).values(
-                            content_hash=content_hash,
-                            content=compressed_content,
-                            blame_info=None).on_conflict_do_nothing(
-                                index_elements=['content_hash'])
+            compressed_content = zlib.compress(
+                source_file_content, zlib.Z_BEST_COMPRESSION)
 
-                    session.execute(insert_stmt)
-                else:
-                    fc = FileContent(content_hash, compressed_content, None)
-                    session.add(fc)
+            if session.bind.dialect.name == 'postgresql':
+                insert_stmt = sqlalchemy.dialects.postgresql \
+                    .insert(FileContent).values(
+                        content_hash=content_hash,
+                        content=compressed_content,
+                        blame_info=None).on_conflict_do_nothing(
+                            index_elements=['content_hash'])
 
-                session.commit()
-            except sqlalchemy.exc.IntegrityError:
-                # Other transaction moght have added the same content in
-                # the meantime.
-                session.rollback()
+                session.execute(insert_stmt)
+            else:
+                fc = FileContent(content_hash, compressed_content, None)
+                session.add(fc)
+                session.flush()
+
+        return content_hash
 
     def __store_checker_identifiers(self, checkers: Set[Tuple[str, str]]):
         """
@@ -1002,6 +1022,27 @@ class MassStoreRun:
 
             session.add(analyzer_statistics)
 
+    def __store_analysis_info_files(
+        self,
+        session: SA_Session,
+        analysis_info_id: int,
+        report_dir_path: str
+    ):
+        """ Store analyzer related config files (e.g. skipfile) """
+        conf_dir_path = os.path.join(report_dir_path, "conf")
+        if not os.path.isdir(conf_dir_path):
+            return
+
+        for file in os.scandir(conf_dir_path):
+            content_hash = self.__add_file_content(session, file.path, None)
+
+            if (not session.get(AnalysisInfoFile,
+                                (analysis_info_id, file.name, content_hash))):
+                session.add(AnalysisInfoFile(
+                    analysis_info_id=analysis_info_id,
+                    filename=file.name,
+                    content_hash=content_hash))
+
     def __store_analysis_info(
         self,
         session: SA_Session,
@@ -1074,6 +1115,13 @@ class MassStoreRun:
                                              checker_set_id=checker_set.id)
                 run_history.analysis_info.append(analysis_info)
                 self.__analysis_info[src_dir_path] = analysis_info
+
+                # Obtain analysis_info.id
+                session.flush()
+
+                self.__store_analysis_info_files(session,
+                                                 analysis_info.id,
+                                                 src_dir_path)
 
     def __add_or_update_run(
         self,
@@ -1298,48 +1346,83 @@ class MassStoreRun:
                 .update({"checker_id": chk_obj.id},
                         synchronize_session=False)
 
-    def __add_report_context(self, session, file_path_to_id):
+    def __add_report_context(
+        self,
+        session: SA_Session,
+        file_path_to_id: Dict[str, int]
+    ):
+        path_data_files = []
+
         for db_report, report in self.__added_reports:
+            path_data = []
+            used_file_ids = set()
+
             LOG.debug("Storing bug path positions.")
-            for idx, path_pos in enumerate(report.bug_path_positions):
-                session.add(BugReportPoint(
-                    path_pos.range.start_line, path_pos.range.start_col,
-                    path_pos.range.end_line, path_pos.range.end_col,
-                    idx, file_path_to_id[path_pos.file.path], db_report.id))
+            for path_pos in report.bug_path_positions:
+                path_data.append(ReportPathData.Item(
+                    path_pos.range.start_line,
+                    path_pos.range.start_col,
+                    path_pos.range.end_line,
+                    path_pos.range.end_col,
+                    file_path_to_id[path_pos.file.path],
+                    "path"
+                ))
+                used_file_ids.add(file_path_to_id[path_pos.file.path])
 
             LOG.debug("Storing bug path events.")
-            for idx, event in enumerate(report.bug_path_events):
-                session.add(BugPathEvent(
-                    event.range.start_line, event.range.start_col,
-                    event.range.end_line, event.range.end_col,
-                    idx, event.message, file_path_to_id[event.file.path],
-                    db_report.id))
+            for event in report.bug_path_events:
+                path_data.append(ReportPathData.Item(
+                    event.range.start_line,
+                    event.range.start_col,
+                    event.range.end_line,
+                    event.range.end_col,
+                    file_path_to_id[event.file.path],
+                    "event",
+                    event.message
+                ))
+                used_file_ids.add(file_path_to_id[event.file.path])
 
             LOG.debug("Storing notes.")
             for note in report.notes:
-                data_type = report_extended_data_type_str(
-                    ttypes.ExtendedReportDataType.NOTE)
-
-                session.add(ExtendedReportData(
-                    note.range.start_line, note.range.start_col,
-                    note.range.end_line, note.range.end_col,
-                    note.message, file_path_to_id[note.file.path],
-                    db_report.id, data_type))
+                path_data.append(ReportPathData.Item(
+                    note.range.start_line,
+                    note.range.start_col,
+                    note.range.end_line,
+                    note.range.end_col,
+                    file_path_to_id[note.file.path],
+                    "note",
+                    note.message
+                ))
+                used_file_ids.add(file_path_to_id[note.file.path])
 
             LOG.debug("Storing macro expansions.")
             for macro in report.macro_expansions:
-                data_type = report_extended_data_type_str(
-                    ttypes.ExtendedReportDataType.MACRO)
+                path_data.append(ReportPathData.Item(
+                    macro.range.start_line,
+                    macro.range.start_col,
+                    macro.range.end_line,
+                    macro.range.end_col,
+                    file_path_to_id[macro.file.path],
+                    "macro",
+                    macro.message
+                ))
+                used_file_ids.add(file_path_to_id[macro.file.path])
 
-                session.add(ExtendedReportData(
-                    macro.range.start_line, macro.range.start_col,
-                    macro.range.end_line, macro.range.end_col,
-                    macro.message, file_path_to_id[macro.file.path],
-                    db_report.id, data_type))
+            report_path_data = ReportPathData(db_report.id, path_data)
+            session.add(report_path_data)
+            session.flush()
+
+            path_data_files.extend({
+                "report_path_data_id": report_path_data.report_id,
+                "file_id": fid
+            } for fid in used_file_ids)
 
             if report.annotations:
                 self.__validate_and_add_report_annotations(
                     session, db_report.id, report.annotations)
+
+        if path_data_files:
+            session.execute(ReportPathDataFile.insert(), path_data_files)
 
         session.flush()
 
@@ -1508,7 +1591,7 @@ class MassStoreRun:
 
     def __store_reports(
         self,
-        session: DBSession,
+        session: SA_Session,
         report_dir: Path,
         source_root: Path,
         run_id: int,

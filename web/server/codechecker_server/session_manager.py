@@ -32,6 +32,7 @@ from .database.config_db_model import Session as SessionRecord
 from .database.config_db_model import OAuthToken
 from .database.config_db_model import PersonalAccessToken
 from .database.config_db_model import SystemPermission
+from .database import db_cleanup
 from .permissions import SUPERUSER
 
 import codechecker_api_shared
@@ -889,6 +890,12 @@ class SessionManager:
         groups = validation.get('groups', [])
         is_root = validation.get('root', False)
 
+        if user_name:
+            db_cleanup.delete_expired_auth_sessions(
+                    self.__config_db_sessionmaker,
+                    self.session_lifetime_duration,
+                    user_name)
+
         local_session = self.__create_local_session(token, user_name,
                                                     groups, is_root)
         self.__sessions.append(local_session)
@@ -952,6 +959,10 @@ class SessionManager:
                      'token': codechecker_session_token,
                      'groups': groups,
                      'is_root': False}
+
+        db_cleanup.delete_expired_auth_sessions(self.__config_db_sessionmaker,
+                                                self.session_lifetime_duration,
+                                                username)
 
         local_session = self.__create_local_session(
             codechecker_session_token,
@@ -1047,6 +1058,11 @@ class SessionManager:
     def get_keepalive_max_probe(self):
         """ Get keepalive max probe count. """
         return self.__keepalive_config.get('max_probe')
+
+    @property
+    def session_lifetime_duration(self) -> int:
+        """ Get session lifetime duration from server configuration. """
+        return self.__auth_config['session_lifetime']
 
     def __get_local_session_from_db(self, token) -> Optional[_Session]:
         """

@@ -509,19 +509,6 @@ def add_arguments_to_parser(parser):
                                     "the analysis is considered as a failed "
                                     "one.")
 
-    analyzer_opts.add_argument('--z3',
-                               dest='enable_z3',
-                               choices=['on', 'off'],
-                               default='off',
-                               help="Enable Z3 as the solver backend. "
-                                    "This allows reasoning over more "
-                                    "complex queries, but performance is "
-                                    "much worse than the default "
-                                    "range-based constraint solver "
-                                    "system. WARNING: Z3 as the only "
-                                    "backend is a highly experimental "
-                                    "and likely unstable feature.")
-
     clang_has_z3_refutation = analyzer_types.is_z3_refutation_capable()
 
     analyzer_opts.add_argument('--z3-refutation',
@@ -1001,28 +988,35 @@ def is_checker_config_valid(
 
 def get_affected_file_paths(
     file_filters: List[str],
-    compile_commands: tu_collector.CompilationDB
+    compile_commands: tu_collector.CompilationDB,
+    jobs: int
 ) -> List[str]:
     """
     Returns a list of source files for existing header file otherwise returns
     with the same file path expression.
     """
     file_paths = []  # Use list to keep the order of the file paths.
+    header_files: List[str] = []
     for file_filter in file_filters:
         file_paths.append(str(Path(file_filter).resolve())
                           if '*' not in file_filter else file_filter)
 
         if os.path.exists(file_filter) and \
                 file_filter.endswith(header_file_extensions):
-            LOG.info("Get dependent source files for '%s'...", file_filter)
-            dependent_sources = tu_collector.get_dependent_sources(
-                compile_commands, file_filter)
+            header_files.append(file_filter)
 
-            LOG.info("Get dependent source files for '%s' done.", file_filter)
-            LOG.debug("Dependent source files: %s",
-                      ', '.join(dependent_sources))
+    if not header_files:
+        return file_paths
 
-            file_paths.extend(dependent_sources)
+    LOG.info("Get dependent source files for '%s'...", ', '.join(header_files))
+    dependent_sources = tu_collector.get_dependent_sources(
+        compile_commands, header_files, jobs)
+    LOG.info("Get dependent source files for '%s' done.",
+             ', '.join(header_files))
+    LOG.debug("Dependent source files: %s",
+              ', '.join(dependent_sources))
+
+    file_paths.extend(dependent_sources)
 
     return file_paths
 
@@ -1035,7 +1029,7 @@ def __get_skip_handlers(args, compile_commands) -> SkipListHandlers:
     skip_handlers = SkipListHandlers()
     if 'files' in args:
         source_file_paths = get_affected_file_paths(
-            args.files, compile_commands)
+            args.files, compile_commands, args.jobs)
 
         # Creates a skip file where all source files will be skipped except
         # the given source files and all the header files.
@@ -1229,12 +1223,6 @@ def check_satisfied_capabilities(args):
         LOG.error("Clang does not support on-demand Cross Translation Unit"
                   "analysis!")
         LOG.info("hint: Clang 11.0.0 is the earliest version to support it")
-        has_error = True
-
-    if 'enable_z3' in args and args.enable_z3 == 'on' and not \
-            analyzer_types.is_z3_capable():
-        LOG.error("Z3 solver cannot be enabled as Clang was not compiled with "
-                  "Z3!")
         has_error = True
 
     if 'enable_z3_refutation' in args and args.enable_z3_refutation == 'on' \
