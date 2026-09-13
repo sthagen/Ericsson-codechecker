@@ -1456,7 +1456,7 @@ class TestAnalyze(unittest.TestCase):
         analyze_cmd = [self._codechecker_cmd, "check", "-l", build_json,
                        "--analyzers", "clang-tidy", "-o", self.report_dir,
                        "--analyzer-config",
-                       "clang-tidy:Checks=hicpp-use-nullptr"]
+                       "clang-tidy:Checks=modernize-use-nullptr"]
 
         print(analyze_cmd)
         process = subprocess.Popen(
@@ -1474,14 +1474,14 @@ class TestAnalyze(unittest.TestCase):
         # unrelated to the analysis broke in CodeChecker. Print both the
         # stdout and stderr streams from the above communicate() call (the
         # latter of which is ignored with _ above).
-        self.assertEqual(out.count('hicpp-use-nullptr'), 2)
+        self.assertEqual(out.count('modernize-use-nullptr'), 2)
 
         analyze_cmd = [self._codechecker_cmd, "check", "-l", build_json,
                        "--analyzers", "clang-tidy", "-o", self.report_dir,
                        "--analyzer-config",
-                       "clang-tidy:Checks=hicpp-use-nullptr",
+                       "clang-tidy:Checks=modernize-use-nullptr",
                        "--checker-config",
-                       "clang-tidy:hicpp-use-nullptr:NullMacros=MY_NULL"]
+                       "clang-tidy:modernize-use-nullptr:NullMacros=MY_NULL"]
 
         print(analyze_cmd)
         process = subprocess.Popen(
@@ -1493,7 +1493,7 @@ class TestAnalyze(unittest.TestCase):
             errors="ignore")
         out, _ = process.communicate()
 
-        self.assertEqual(out.count('hicpp-use-nullptr'), 3)
+        self.assertEqual(out.count('modernize-use-nullptr'), 3)
 
         analyze_cmd = [self._codechecker_cmd, "check", "-l", build_json,
                        "--analyzers", "clangsa", "-o", self.report_dir,

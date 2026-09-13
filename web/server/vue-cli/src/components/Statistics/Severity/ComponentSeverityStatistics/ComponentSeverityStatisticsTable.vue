@@ -9,13 +9,15 @@
     :total-columns="totalColumns"
     loading-text="Loading component statistics..."
     no-data-text="No component statistics available"
-    item-key="component"
+    item-value="component"
     show-expand
+    return-object
     :necessary-total="true"
-    @item-expanded="itemExpanded"
   >
-    <template v-slot:expanded-item="{ item }">
-      <expanded-item :item="item" :colspan="headers.length" />
+    <template v-slot:expanded-row="{ item }">
+      <tr>
+        <expanded-item :item="item" :colspan="headers.length" />
+      </tr>
     </template>
 
     <template
@@ -93,6 +95,13 @@ const headers = [
   }
 ];
 
+watch(expanded, function(newVal, oldVal) {
+  const added = newVal.find(_item => !oldVal.includes(_item));
+  if (added) {
+    loadCheckerStatistics(added);
+  }
+});
+
 watch(
   () => props.loading,
   () => {
@@ -100,28 +109,28 @@ watch(
 
     expanded.value.forEach(_e => {
       const _item = props.items.find(_i => _i.component === _e.component);
-      itemExpanded({ item : _item });
+      if (_item) loadCheckerStatistics(_item);
     });
   }
 );
 
-async function itemExpanded(expandedItem) {
-  if (expandedItem.item.checkerStatistics) return;
+async function loadCheckerStatistics(item) {
+  if (!item || item.checkerStatistics) return;
 
-  expandedItem.item.loading = true;
+  item.loading = true;
 
-  const _component = expandedItem.item.component;
+  const _component = item.component;
   const _runIds = props.filters.runIds;
   const _reportFilter = new ReportFilter(props.filters.reportFilter);
   _reportFilter["componentNames"] = [ _component ];
   const _cmpData = props.filters.cmpData;
 
   const _stats = await getCheckerStatistics(_runIds, _reportFilter, _cmpData);
-  expandedItem.item.checkerStatistics = _stats.map(_stat => ({
+  item.checkerStatistics = _stats.map(_stat => ({
     ..._stat,
     $queryParams: { "source-component": _component }
   }));
-  expandedItem.item.loading = false;
+  item.loading = false;
 }
 </script>
 

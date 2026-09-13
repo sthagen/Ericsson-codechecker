@@ -15,7 +15,7 @@
         v-model="checkerDocDialog"
         :checker="selectedChecker"
       />
-      <div class="d-flex align-center w-100">
+      <div class="d-flex align-center w-100 mb-2">
         <span class="mr-2 text-body-2">View</span>
         <v-btn-toggle
           v-model="viewMode"
@@ -52,7 +52,7 @@
         v-model:items-per-page="itemsPerPage"
         v-model:sort-by="sortBy"
         v-model:expanded="expanded"
-        class="text-caption"
+        class="text-caption reports-table"
         :items-per-page-options="itemsPerPageOptions"
         :items-length="totalItems"
         :headers="tableHeaders"
@@ -186,7 +186,9 @@
         </template>
 
         <template v-else #item.reviewData="{ item }">
-          <review-status-icon :status="parseInt(item.reviewData.status)" />
+          <review-status-icon
+            :status="parseInt(item.reviewData.status)"
+          />
         </template>
 
         <template #item.detectionStatus="{ item }">
@@ -282,7 +284,10 @@
             class="tree-header-cell sortable"
             @click="toggleTreeSort('unreviewed')"
           >
-            <review-status-icon :status="0" :size="14" />
+            <review-status-icon
+              :status="0"
+              :size="14"
+            />
             <v-icon
               v-if="treeSortKey === 'unreviewed'"
               size="12"
@@ -295,7 +300,10 @@
             class="tree-header-cell sortable"
             @click="toggleTreeSort('confirmed')"
           >
-            <review-status-icon :status="1" :size="14" />
+            <review-status-icon
+              :status="1"
+              :size="14"
+            />
             <v-icon
               v-if="treeSortKey === 'confirmed'"
               size="12"
@@ -308,7 +316,10 @@
             class="tree-header-cell sortable"
             @click="toggleTreeSort('false_positive')"
           >
-            <review-status-icon :status="2" :size="14" />
+            <review-status-icon
+              :status="2"
+              :size="14"
+            />
             <v-icon
               v-if="treeSortKey === 'false_positive'"
               size="12"
@@ -321,7 +332,10 @@
             class="tree-header-cell sortable"
             @click="toggleTreeSort('intentional')"
           >
-            <review-status-icon :status="3" :size="14" />
+            <review-status-icon
+              :status="3"
+              :size="14"
+            />
             <v-icon
               v-if="treeSortKey === 'intentional'"
               size="12"
@@ -493,72 +507,73 @@ const sortBy = ref(
 const headers = [
   {
     title: "",
-    value: "data-table-expand"
+    key: "data-table-expand"
   },
   {
     title: "Report hash",
-    value: "bugHash",
+    key: "bugHash",
     sortable: false
   },
   {
     title: "File",
-    value: "checkedFile",
+    key: "checkedFile",
     sortable: true
   },
   {
     title: "Message",
-    value: "checkerMsg",
+    key: "checkerMsg",
     sortable: false
   },
   {
     title: "Checker name",
-    value: "checkerId",
+    key: "checkerId",
     sortable: true
   },
   {
     title: "Analyzer",
-    value: "analyzerName",
+    key: "analyzerName",
     align: "center",
     sortable: false
   },
   {
     title: "Severity",
-    value: "severity",
-    sortable: true
+    key: "severity",
+    sortable: true,
+    align: "center"
   },
   {
     title: "Bug path length",
-    value: "bugPathLength",
+    key: "bugPathLength",
     align: "center",
     sortable: true
   },
   {
     title: "Latest review status",
-    value: "reviewData",
+    key: "reviewData",
     align: "center",
     sortable: true
   },
   {
     title: "Latest detection status",
-    value: "detectionStatus",
+    key: "detectionStatus",
     align: "center",
     sortable: true
   },
   {
     title: "Timestamp",
-    value: "timestamp",
+    key: "timestamp",
     align: "center",
     sortable: true
   },
   {
     title: "Chronological order",
-    value: "chronological_order",
+    key: "chronological_order",
     align: "center",
     sortable: true
   },
   {
     title: "Testcase",
-    value: "testcase",
+    key: "testcase",
     align: "center",
     sortable: true
   }
@@ -601,25 +616,25 @@ const tableHeaders = computed(function() {
   if (!headers || !reportFilter.value) return [];
 
   return headers.filter(_header => {
-    if (_header.value === "detectionStatus") {
+    if (_header.key === "detectionStatus") {
       return !reportFilter.value.isUnique;
     }
 
-    if (_header.value === "data-table-expand") {
+    if (_header.key === "data-table-expand") {
       return reportFilter.value.isUnique;
     }
 
-    if (_header.value === "timestamp") {
+    if (_header.key === "timestamp") {
       return hasTimeStamp.value &&
         !reportFilter.value.isUnique;
     }
 
-    if (_header.value === "testcase") {
+    if (_header.key === "testcase") {
       return hasTestCase.value &&
         !reportFilter.value.isUnique;
     }
 
-    if (_header.value === "chronological_order") {
+    if (_header.key === "chronological_order") {
       return hasChronologicalOrder.value &&
         !reportFilter.value.isUnique;
     }
@@ -1168,8 +1183,8 @@ onDeactivated(unlockBodyScroll);
 }
 
 .v-btn-toggle .v-btn--active {
-  background-color: #2280c3 !important;
-  color: #fff !important;
+  background-color: var(--color-soft-blue) !important;
+  color: #ffffff !important;
 }
 
 .tree-view-container {
@@ -1264,6 +1279,17 @@ onDeactivated(unlockBodyScroll);
 
   .checker-name {
     cursor: pointer;
+  }
+}
+
+.reports-table {
+  th.v-data-table-column--align-center {
+    .v-data-table-header__content::before {
+      content: "";
+      display: inline-block;
+      width: 18px;
+      flex: 0 0 auto;
+    }
   }
 }
 

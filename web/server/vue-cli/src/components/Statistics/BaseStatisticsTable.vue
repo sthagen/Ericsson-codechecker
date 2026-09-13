@@ -1,6 +1,7 @@
 <template>
   <v-data-table
-    v-bind="{ ...$props }"
+    v-bind="tableProps"
+    v-model:expanded="expandedModel"
     :row-props="getRowProps"
     :disable-pagination="true"
     :hide-default-footer="true"
@@ -583,10 +584,26 @@ const props = defineProps({
       "falsePositive", "intentional", "suppressed","reports" ]
   },
   necessaryTotal: { type: Boolean, default: false },
-  itemClass: { type: Function, default: null }
+  itemClass: { type: Function, default: null },
+  expanded: { type: Array, default: () => [] }
 });
 
-defineEmits([ "enabled-click" ]);
+const emit = defineEmits([ "enabled-click", "update:expanded" ]);
+
+const expandedModel = computed({
+  get() {
+    return props.expanded;
+  },
+  set(value) {
+    emit("update:expanded", value);
+  }
+});
+
+const tableProps = computed(function() {
+  // eslint-disable-next-line no-unused-vars
+  const { expanded, ...rest } = props;
+  return rest;
+});
 
 const route = useRoute();
 const reportStatus = useReportStatus();
@@ -751,7 +768,7 @@ function getNestedTableContent(checkers, prop, descending) {
 
 .guideline-statistics table td {
   padding: 2px;
-  border-bottom: 1px solid #ddd;
+  border-bottom: 1px solid #dddddd;
 }
 
 .guideline-statistics table tr:last-child td {

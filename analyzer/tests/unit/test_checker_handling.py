@@ -14,9 +14,13 @@ Test the handling of implicitly and explicitly handled checkers in analyzers
 from codechecker_common.util import strtobool
 import os
 import re
+import shutil
 import tempfile
 import unittest
 from argparse import Namespace
+from unittest import mock
+
+from semver.version import Version
 
 from codechecker_analyzer.analyzers.clangsa.analyzer import ClangSA
 from codechecker_analyzer.analyzers.clangtidy.analyzer import ClangTidy
@@ -639,7 +643,7 @@ class CheckerHandlingClangTidyTest(unittest.TestCase):
             analyzer.construct_analyzer_cmd(result_handler)))
 
         analyzer.config_handler.checker_config = \
-            '{"Checks": "hicpp-use-nullptr"}'
+            '{"Checks": "modernize-use-nullptr"}'
 
         self.assertTrue(self._is_disabled(
             'clang-analyzer',
@@ -781,6 +785,41 @@ class CheckerHandlingClangTidyTest(unittest.TestCase):
         # -Wno-unused-value.
         self.assertEqual(cmd.count('-Wvla'), 1)
         self.assertEqual(cmd.count('-Wvla-extension'), 1)
+
+
+@unittest.skipIf(shutil.which('clang-tidy') is None,
+                 "clang-tidy is not available")
+class ClangTidyAllowNoChecksTest(unittest.TestCase):
+    """
+    With no -checks passed, clang-tidy 19+ errors on an empty check set, so
+    --allow-no-checks must be added for those versions only.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        context = analyzer_context.get_context()
+        context._checker_labels = MockClangTidyCheckerLabels()
+
+    def _cmd_with(self, version):
+        analyzer = create_analyzer_tidy()
+        result_handler = create_result_handler(analyzer)
+        with mock.patch.object(ClangTidy, 'get_checker_list',
+                               return_value=([], [])), \
+                mock.patch.object(ClangTidy, 'get_binary_version',
+                                  return_value=version):
+            return analyzer.construct_analyzer_cmd(result_handler)
+
+    def test_added_for_tidy_19(self):
+        cmd = self._cmd_with(Version.parse('19.1.0'))
+        self.assertIn('--allow-no-checks', cmd)
+
+    def test_not_added_for_tidy_18(self):
+        cmd = self._cmd_with(Version.parse('18.1.8'))
+        self.assertNotIn('--allow-no-checks', cmd)
+
+    def test_not_added_when_version_unknown(self):
+        cmd = self._cmd_with(None)
+        self.assertNotIn('--allow-no-checks', cmd)
 
 
 def create_analyzer_cppcheck(args, workspace):

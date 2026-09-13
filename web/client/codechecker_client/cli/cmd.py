@@ -498,7 +498,7 @@ def __register_results(parser):
                         action="store_true",
                         required=False,
                         default=argparse.SUPPRESS,
-                        help="DEPRECATED. Get report details for reports such "
+                        help="Get report details for reports such "
                              "as bug path events, bug report points etc. "
                              "Detailed view contains Git information if it "
                              "was available and stored for the queried "
